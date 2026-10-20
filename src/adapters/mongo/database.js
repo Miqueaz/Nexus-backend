@@ -1,4 +1,4 @@
-import { MongoClient } from 'mongodb';
+import { AppError } from '../../core/errors.js';
 export const collections = [
   'businesses',
   'memberships',
@@ -18,18 +18,28 @@ export const collections = [
   'debts',
   'debtPayments',
 ];
-export async function connectDatabase(config) {
+export async function connectDatabase(
+  config,
+  { initializeIndexes = true, poolSize = 20, monitoringMode = 'auto' } = {},
+) {
+  // El driver genera valores aleatorios al importarse: cargarlo dentro de una solicitud Workers.
+  const { MongoClient } = await import('mongodb');
   const client = new MongoClient(config.mongoUri, {
     serverSelectionTimeoutMS: 10000,
-    maxPoolSize: 20,
+    maxPoolSize: poolSize,
+    maxConnecting: 1,
+    serverMonitoringMode: monitoringMode,
+    minPoolSize: 0,
+    maxIdleTimeMS: 20000,
   });
-  await client.connect();
   const db = client.db(config.mongoDb);
   try {
+    await client.connect();
     const hello = await db.admin().command({ hello: 1 });
     if (!hello.setName && hello.msg !== 'isdbgrid')
       throw new Error('MongoDB debe ser un replica set o clúster sharded para transacciones');
-    await ensureIndexes(db);
+    if (initializeIndexes) await ensureIndexes(db);
+    else await assertDatabasePrepared(db);
     return { client, db };
   } catch (error) {
     await client.close();
@@ -46,7 +56,11 @@ export async function ensureIndexes(db) {
     'securityEvents',
   ]) {
     if (!(await db.listCollections({ name }, { nameOnly: true }).hasNext()))
-      await db.createCollection(name);
+      try {
+        await db.createCollection(name);
+      } catch (error) {
+        if (error.code !== 48) throw error;
+      }
   }
   for (const name of collections)
     await db.collection(name).createIndex({ businessId: 1, createdAt: -1, _id: -1 });
@@ -71,4 +85,31 @@ export async function ensureIndexes(db) {
       { businessId: 1, quoteId: 1 },
       { unique: true, partialFilterExpression: { quoteId: { $type: 'string' } } },
     );
+}
+
+/** Verifica las restricciones de consistencia sin crear índices desde Workers. */
+export async function assertDatabasePrepared(db) {
+  const required = [
+    ['users', { email: 1 }],
+    ['memberships', { businessId: 1, userId: 1 }],
+    ['idempotency', { businessId: 1, key: 1 }],
+    ['items', { businessId: 1, sku: 1 }],
+    ['sales', { businessId: 1, quoteId: 1 }],
+  ];
+  try {
+    for (const [name, key] of required) {
+      const indexes = await db.collection(name).listIndexes().toArray();
+      const index = indexes.find((i) => i.unique && JSON.stringify(i.key) === JSON.stringify(key));
+      if (!index) throw new Error('Missing unique index');
+      const partialField = name === 'items' ? 'sku' : name === 'sales' ? 'quoteId' : null;
+      if (partialField && index.partialFilterExpression?.[partialField]?.$type !== 'string')
+        throw new Error('Incorrect partial index');
+    }
+  } catch {
+    throw new AppError(
+      503,
+      'DATABASE_NOT_PREPARED',
+      'Ejecuta npm run db:migrate antes de iniciar Workers',
+    );
+  }
 }

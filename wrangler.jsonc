@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "nexis-backend",
+  "main": "src/workers/index.js",
+  "compatibility_date": "2026-10-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "vars": {
+    "NODE_ENV": "production",
+    "MONGO_DB": "nexo",
+    "JWT_ISSUER": "nexo-api",
+    "JWT_AUDIENCE": "nexo-app",
+    "ACCESS_TOKEN_MINUTES": "30",
+    "CORS_ORIGINS": "http://localhost:5173",
+    "LOG_LEVEL": "info"
+  },
+  "durable_objects": {"bindings": [{"name": "BUSINESS_API", "class_name": "BusinessApi"}]},
+  "migrations": [{"tag": "v1", "new_sqlite_classes": ["BusinessApi"]}],
+  "observability": {"enabled": true},
+  "limits": {"cpu_ms": 30000}
+}

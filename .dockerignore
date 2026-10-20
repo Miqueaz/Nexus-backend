@@ -6,3 +6,7 @@ node_modules
 coverage
 *.log
 test
+.wrangler
+dist-worker
+.dev.vars
+.dev.vars.*

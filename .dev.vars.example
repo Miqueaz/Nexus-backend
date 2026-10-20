@@ -1,0 +1,5 @@
+# Copiar a .dev.vars para wrangler dev. Nunca versionar credenciales.
+MONGO_URI="mongodb://localhost:27017/nexo?replicaSet=rs0&directConnection=true"
+JWT_SECRET="REEMPLAZAR_CON_UNA_CLAVE_ALEATORIA_DE_AL_MENOS_48_CARACTERES"
+# Para el frontend local; producción se define en wrangler.jsonc.
+CORS_ORIGINS="http://localhost:5173"

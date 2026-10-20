@@ -1,16 +1,22 @@
 {
   "name": "nexo-backend",
   "version": "1.0.0",
-  "description": "API modular de negocios con MongoDB, Bearer JWT y auditor\u00eda transaccional",
+  "description": "API modular de negocios con MongoDB, Bearer JWT y auditoría transaccional",
   "scripts": {
     "start": "node --env-file=.env src/server.js",
     "dev": "node --watch --env-file=.env src/server.js",
-    "test": "node --test --test-concurrency=1",
+    "test": "npm run test:node && npm run test:workers",
     "check": "node scripts/check.js",
     "secret": "node -e \"console.log(require('node:crypto').randomBytes(64).toString('base64url'))\"",
     "setup": "node scripts/setup.js",
     "format": "prettier --write src test scripts docs/frontend-adapter.js",
-    "format:check": "prettier --check src test scripts docs/frontend-adapter.js"
+    "format:check": "prettier --check src test scripts docs/frontend-adapter.js",
+    "db:migrate": "node --env-file=.env scripts/migrate.js",
+    "workers:dev": "wrangler dev",
+    "workers:build": "wrangler deploy --dry-run --outdir dist-worker",
+    "workers:deploy": "wrangler deploy",
+    "test:workers": "node --test --test-concurrency=1 test/workers/*.test.js",
+    "test:node": "node --test --test-concurrency=1 test/*.test.js"
   },
   "license": "UNLICENSED",
   "type": "module",
@@ -19,6 +25,7 @@
     "express": "5.3.0",
     "express-rate-limit": "8.7.1",
     "helmet": "8.3.0",
+    "hono": "4.13.13",
     "jose": "6.2.13",
     "mongodb": "7.7.0",
     "pino": "10.4.0",
@@ -27,7 +34,8 @@
   "devDependencies": {
     "mongodb-memory-server": "11.3.0",
     "prettier": "3.9.10",
-    "supertest": "7.3.1"
+    "supertest": "7.3.1",
+    "wrangler": "4.151.3"
   },
   "private": true,
   "engines": {

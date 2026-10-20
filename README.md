@@ -2,6 +2,18 @@
 
 API REST en **JavaScript ESM / Node.js 24**, Express 5 y MongoDB. Incluye autenticación JWT Bearer con sesiones revocables, permisos por negocio y auditoría transaccional. Código organizado por módulos y puertos/adaptadores, con inyección de dependencias.
 
+## Cloudflare Workers
+
+También se incluye un despliegue para Workers con un adaptador Fetch/Hono y Durable Objects que reutilizan MongoDB. Comparte las mismas rutas y reglas del backend Node. Sigue [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md) para preparar índices, configurar secretos y desplegar; todavía no hay un Worker productivo publicado.
+
+```bash
+npm ci
+npm run db:migrate
+npm run workers:build
+# Después de configurar Cloudflare y sus secretos:
+npm run workers:deploy
+```
+
 ## Iniciar
 
 Requisitos: Node.js 24, npm y Docker Compose, o un MongoDB Atlas/replica set accesible.
@@ -52,13 +64,16 @@ src/
     mongo/             Unidad de trabajo, identidad, consultas, auditoría, índices
     modules/           Puentes entre finanzas, inventario, contactos y ventas
     logger.js          Pino con redacción de secretos
-  http/app.js          Rutas, seguridad HTTP y traducción de errores
+  http/routes.js       Catálogo de rutas compartido
+  http/app.js          Adaptador Express (Node)
+  http/fetch-app.js    Adaptador Fetch/Hono (Workers)
+  workers/             Entrada Worker, Durable Object y límite persistente de acceso
   container.js         Composition root: conecta implementaciones con sus puertos
   config.js            Variables de entorno validadas
   server.js            Arranque y cierre ordenado
 ```
 
-Los módulos no importan el driver de MongoDB ni Express. Reciben dependencias desde `container.js`. `core/ports.js` describe los contratos. Para cambiar un proveedor de persistencia, implementa sus puertos y conéctalo en el contenedor. Los filtros y agregaciones de lectura viven en `adapters/mongo/queries.js`.
+Los módulos no importan el driver de MongoDB, Express ni Hono. Reciben dependencias desde `container.js`. `core/ports.js` describe los contratos. Para cambiar un proveedor de persistencia, implementa sus puertos y conéctalo en el contenedor. Los filtros y agregaciones de lectura viven en `adapters/mongo/queries.js`.
 
 Una venta usa `InventoryPort`, `FinancePort` y `ContactsPort`. Las cotizaciones convierten a venta mediante `SalesPort`. Estos adaptadores comparten la misma unidad de trabajo; no hay llamadas HTTP internas. Así, la comunicación es explícita y se puede sustituir un módulo sin acoplarlo a otro repositorio.
 
@@ -110,7 +125,7 @@ npm run format:check
 npm test
 ```
 
-Las pruebas levantan temporalmente un **MongoDB 8.0.16 replica set real** mediante `mongodb-memory-server`; la primera ejecución descarga el binario. No usan un mock de Mongo. Para una base de pruebas propia: `TEST_MONGO_URI='mongodb://...' npm test`; se crea una base aleatoria y se elimina al terminar. Nunca apuntes pruebas al nombre de una base productiva mediante cambios al harness.
+Las pruebas de Node y de Workers levantan temporalmente un **MongoDB 8.0.16 replica set real** mediante `mongodb-memory-server`; la primera ejecución descarga el binario. No usan un mock de Mongo. Para una base de pruebas propia: `TEST_MONGO_URI='mongodb://...' npm run test:node`; se crea una base aleatoria y se elimina al terminar. Nunca apuntes pruebas al nombre de una base productiva mediante cambios al harness.
 
 Si el sistema de archivos temporal no soporta el bloqueo que necesita MongoDB, selecciona un directorio compatible con `TEST_TMP_ROOT=/ruta npm test`. En el entorno de entrega se usó `/dev/shm`. Se deshabilita el socket Unix en el Mongo de prueba; la conexión se hace por TCP local.
 

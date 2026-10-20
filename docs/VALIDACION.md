@@ -1,15 +1,23 @@
 # Validación de entrega
 
-Ejecutado sobre Node.js 24.19.0 y un MongoDB 8.0.16 real, temporal, configurado como replica set de un nodo.
+Entorno: Node.js 24.19.0, MongoDB 8.0.16 real en replica set de un nodo, Wrangler 4.151.3 y su runtime local `workerd`.
 
 | Comprobación | Resultado |
 |---|---|
 | `npm run check` | Sintaxis correcta en fuentes, scripts y pruebas |
-| `npm run format:check` | Todos los archivos verificados pasan Prettier |
-| `TEST_TMP_ROOT=/dev/shm npm test` | **21/21 aprobadas**, 0 omitidas, 0 fallidas |
+| `npm run format:check` | Archivos verificados con Prettier |
+| `npm run workers:build` | Bundle Workers generado con `wrangler deploy --dry-run` |
+| `TEST_TMP_ROOT=/dev/shm npm run test:node` | 21/21 aprobadas |
+| `TEST_TMP_ROOT=/dev/shm npm run test:workers` | 7/7 aprobadas |
 
-Las 21 pruebas se dividen en 16 de integración HTTP/MongoDB y 5 de reglas de dominio. Se verificaron autenticación y revocación, separación de negocios, roles y retiro de permisos, venta con descuento, idempotencia normal y concurrente, rollback de venta, prevención de sobreventa concurrente, validación de listas/campos, revisiones, snapshots históricos, conversión única de cotización, crédito/pagos/reprogramación, cupo concurrente, artículos sin conteo, recursos internos, preservación de campos en PATCH, egresos diferidos, rollback de pagos, proyectos, eventos, proyecciones y ausencia de secretos en eventos de seguridad.
+La suite de Node incluye 16 pruebas de integración HTTP/Mongo y 5 de reglas de dominio. Cubre autenticación/revocación, aislamiento, roles y retiro de permisos, descuentos, idempotencia normal/concurrente, rollback, sobreventa concurrente, listas/campos dinámicos, revisiones, historial, conversión única de cotizaciones, crédito/pagos/reprogramación, cupo concurrente, servicios sin conteo, recursos internos, PATCH, egresos diferidos, proyectos, eventos y proyecciones.
 
-Las pruebas se ejecutaron usando el almacenamiento temporal `/dev/shm` y deshabilitando el socket Unix del proceso MongoDB, por restricciones del directorio/socket temporal del entorno. La API se conectó por TCP y ejecutó transacciones reales con rollback y conflictos de escritura.
+La suite Workers incluye cinco pruebas que despachan solicitudes al runtime `workerd` con MongoDB real: arranque/CORS/límites de cuerpos, scrypt/JWT/revocación/aislamiento, ventas/idempotencia/rollback/historial/auditoría, límite de login persistido en SQLite de un Durable Object y ventas concurrentes sin sobreventa. Otras dos pruebas verifican la redacción de secretos en logs y el rechazo de una base sin índices de consistencia. El catálogo de rutas se comparte con Express.
 
-No se ejecutó Docker Compose porque Docker no estaba instalado. Los archivos Docker/Compose se entregan como configuración de desarrollo. No se realizó despliegue, conexión a una cuenta MongoDB remota, migración del frontend, pruebas de carga ni una revisión de seguridad externa. El frontend existente todavía debe conectarse mediante su adaptador de persistencia; se incluye un adaptador fetch de ejemplo.
+Wrangler puede emitir una advertencia de bundling sobre el export default del alias `whatwg-url`; la generación del bundle y las pruebas del driver real en Workerd permiten verificar el recorrido utilizado por esta aplicación. No se silenció la advertencia.
+
+MongoDB temporal usa `/dev/shm` y `--nounixsocket` por restricciones del directorio/socket temporal de este entorno. Las conexiones son TCP y se ejecutan transacciones reales. Los tests no utilizan la base Atlas ni credenciales del usuario y eliminan sus bases aleatorias al terminar.
+
+La comprobación del Atlas proporcionado no pudo completarse: la consulta DNS SRV devolvió `ECONNREFUSED` antes de autenticar. No se confirmó esa conexión ni se prepararon sus índices. Los valores recibidos se conservaron únicamente en archivos locales excluidos de Git y no se incorporan a documentación, bundle, código ni commits.
+
+No se ejecutó Docker Compose (Docker no estaba instalado), no se publicó un Worker en una cuenta Cloudflare, no se migró el frontend ni se realizaron pruebas de carga o una revisión externa de seguridad. La configuración de Cloudflare y sus secretos, el permiso de red de Atlas y la migración de índices del destino deben completarse al desplegar. Ver `docs/CLOUDFLARE.md`.

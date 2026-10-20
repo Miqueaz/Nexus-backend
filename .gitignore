@@ -4,3 +4,8 @@ node_modules/
 !.env.example
 coverage/
 *.log
+.wrangler/
+dist-worker/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
