@@ -456,6 +456,119 @@ test('Proyectos, eventos y cálculo de proyecciones validan pertenencia al negoc
   assert.equal(calculation.months.length, 2);
   await call(f, 'post', '/projections', assumptions).expect(201);
 });
+test('Líneas guardan estados de cuenta, edición parcial y auditoría sin mover dinero', async () => {
+  const f = await fixture();
+  const w = await wallet(f);
+  const payload = {
+    name: 'Tarjeta',
+    limitMinor: 200000,
+    notes: 'Estado de cuenta',
+    statementCutoffOn: '2026-10-20',
+    paymentDueOn: '2026-11-10',
+    minimumPaymentMinor: 12500,
+    interestFreePaymentMinor: 150000,
+    annualInterestBps: 10590,
+  };
+  const line = (await call(f, 'post', '/credit-lines', payload).expect(201)).body;
+  const at = new Date().toISOString();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const updated = (
+    await call(f, 'patch', `/credit-lines/${line._id}`, {
+      minimumPaymentMinor: 0,
+      revision: line.revision,
+    }).expect(200)
+  ).body;
+  assert.equal(updated.notes, payload.notes);
+  assert.equal(updated.statementCutoffOn, payload.statementCutoffOn);
+  assert.equal(updated.interestFreePaymentMinor, 150000);
+  assert.equal(updated.annualInterestBps, 10590);
+  assert.equal(updated.minimumPaymentMinor, 0);
+  await call(f, 'patch', `/credit-lines/${line._id}`, { name: 'Conflicto', revision: 1 }).expect(
+    409,
+  );
+  const cleared = (
+    await call(f, 'patch', `/credit-lines/${line._id}`, {
+      statementCutoffOn: null,
+      paymentDueOn: null,
+      minimumPaymentMinor: null,
+      annualInterestBps: null,
+      revision: updated.revision,
+    }).expect(200)
+  ).body;
+  assert.equal(cleared.minimumPaymentMinor, null);
+  assert.equal(cleared.annualInterestBps, null);
+  assert.equal(cleared.interestFreePaymentMinor, 150000);
+  const history = (
+    await call(f, 'get', '/history?collection=creditLines&at=' + encodeURIComponent(at)).expect(200)
+  ).body;
+  assert.equal(history.data[0].minimumPaymentMinor, 12500);
+  const balances = (await call(f, 'get', '/credit-lines/balances').expect(200)).body;
+  assert.equal(balances[0].availableMinor, 200000);
+  assert.equal(balances[0].usedMinor, 0);
+  assert.equal((await call(f, 'get', `/wallets/${w._id}`).expect(200)).body.balanceMinor, 100000);
+  assert.equal(await db.collection('movements').countDocuments({ businessId: f.business._id }), 1);
+  assert.equal(await db.collection('debts').countDocuments({ businessId: f.business._id }), 0);
+  assert.equal(
+    await db
+      .collection('audit')
+      .countDocuments({ businessId: f.business._id, action: 'creditLine.updated' }),
+    2,
+  );
+});
+test('Líneas antiguas conservan datos; fechas, importes, revisión y permisos se validan', async () => {
+  const f = await fixture();
+  const line = (
+    await call(f, 'post', '/credit-lines', {
+      name: 'Proveedor',
+      limitMinor: 10000,
+      notes: 'Conservar',
+    }).expect(201)
+  ).body;
+  assert.equal(line.statementCutoffOn, null);
+  const updated = (
+    await call(f, 'patch', `/credit-lines/${line._id}`, {
+      name: 'Actualizado',
+      revision: 1,
+    }).expect(200)
+  ).body;
+  assert.equal(updated.notes, 'Conservar');
+  assert.equal(updated.limitMinor, 10000);
+  for (const patch of [
+    { minimumPaymentMinor: -1 },
+    { minimumPaymentMinor: 1.5 },
+    { annualInterestBps: -1 },
+    { annualInterestBps: 1.5 },
+    { statementCutoffOn: '2026-02-30' },
+    { limitMinor: 100 },
+    { statementCutoffOn: '2026-11-10', paymentDueOn: '2026-11-01' },
+  ])
+    await call(f, 'patch', `/credit-lines/${line._id}`, {
+      ...patch,
+      revision: updated.revision,
+    }).expect(422);
+  const dated = (
+    await call(f, 'patch', `/credit-lines/${line._id}`, {
+      statementCutoffOn: '2026-11-10',
+      paymentDueOn: '2026-12-01',
+      revision: updated.revision,
+    }).expect(200)
+  ).body;
+  await call(f, 'patch', `/credit-lines/${line._id}`, {
+    paymentDueOn: '2026-11-01',
+    revision: dated.revision,
+  }).expect(422);
+  const viewer = await user();
+  await call(f, 'post', '/members', { email: viewer.email, role: 'viewer' }).expect(201);
+  await call({ ...f, token: viewer.token }, 'patch', `/credit-lines/${line._id}`, {
+    notes: 'No autorizado',
+    revision: dated.revision,
+  }).expect(403);
+  const other = await user();
+  await call({ ...f, token: other.token }, 'patch', `/credit-lines/${line._id}`, {
+    notes: 'Ajeno',
+    revision: dated.revision,
+  }).expect(404);
+});
 test('Login valida credenciales y persiste seguridad sin secretos', async () => {
   const u = await user();
   await request(app)

@@ -180,6 +180,40 @@ test('Worker mantiene ventas, idempotencia, rollback, historial y auditorÃ­a atÃ
   assert.equal(audits.length, 5);
   assert.equal(await db.collection('sales').countDocuments({ businessId: f.businessId }), 1);
 });
+test('Workerd guarda y edita los campos de tarjeta sin alterar su cupo', async () => {
+  const f = await fixture();
+  const created = await call(
+    'POST',
+    f.base + '/credit-lines',
+    {
+      name: 'Tarjeta',
+      limitMinor: 500000,
+      statementCutoffOn: '2026-10-20',
+      paymentDueOn: '2026-11-10',
+      minimumPaymentMinor: 15000,
+      interestFreePaymentMinor: 200000,
+      annualInterestBps: 6590,
+    },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(created.status, 201, JSON.stringify(created.data));
+  const updated = await call(
+    'PATCH',
+    f.base + '/credit-lines/' + created.data._id,
+    {
+      minimumPaymentMinor: 0,
+      revision: created.data.revision,
+    },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(updated.status, 200, JSON.stringify(updated.data));
+  assert.equal(updated.data.annualInterestBps, 6590);
+  assert.equal(updated.data.paymentDueOn, '2026-11-10');
+  assert.equal(updated.data.minimumPaymentMinor, 0);
+  assert.equal(updated.data.limitMinor, 500000);
+});
 test('Durable Object limita login/registro antes de procesar credenciales', async () => {
   for (let i = 0; i < 15; i++) {
     const r = await worker.fetch('https://api.example.com/api/v1/auth/login', {

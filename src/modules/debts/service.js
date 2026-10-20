@@ -1,7 +1,22 @@
-import { z, id, text, notes, money, amount, date, revision } from '../../core/validation.js';
+import {
+  z,
+  id,
+  text,
+  notes,
+  money,
+  amount,
+  date,
+  revision,
+  parsePatch,
+} from '../../core/validation.js';
 import { ensure } from '../../core/errors.js';
 import { safeInteger } from '../../core/money.js';
 import { buildSchedule, allocatePayment, pending } from './schedule.js';
+import {
+  creditLineCreateSchema,
+  creditLineUpdateSchema,
+  assertStatementDates,
+} from './credit-lines.js';
 const terms = z.number().int().min(1).max(120);
 const mode = z.enum(['monthly', 'balloon']);
 export function createDebtsService({ commands, finance, contacts }) {
@@ -27,10 +42,20 @@ export function createDebtsService({ commands, finance, contacts }) {
   }
   return {
     createLine(ctx, input) {
-      const d = z.strictObject({ name: text, limitMinor: amount, notes }).parse(input);
+      const d = creditLineCreateSchema.parse(input);
+      assertStatementDates(d);
       return commands.run(ctx, 'creditLine.created', d, (tx) =>
         tx.insert('creditLines', { ...d, archived: false }),
       );
+    },
+    updateLine(ctx, lineId, input) {
+      id.parse(lineId);
+      const d = parsePatch(creditLineUpdateSchema, input);
+      return commands.run(ctx, 'creditLine.updated', { lineId, ...d }, async (tx) => {
+        const line = await tx.get('creditLines', lineId);
+        assertStatementDates({ ...line, ...d });
+        return tx.update('creditLines', lineId, d.revision, d);
+      });
     },
     lineBalances(ctx) {
       return commands.read(ctx, async (tx) => {

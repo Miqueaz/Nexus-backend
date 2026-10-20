@@ -123,8 +123,9 @@ Venta: retorna `subtotalMinor`, `discountMinor`, `totalMinor`, `costMinor`, `pro
 
 | Método y ruta | Entrada |
 |---|---|
-| POST `/credit-lines` | `{name,limitMinor,notes?}` |
-| GET `/credit-lines/balances` | Lista con cupo usado y disponible |
+| POST `/credit-lines` | `{name,limitMinor,notes?,statementCutoffOn?,paymentDueOn?,minimumPaymentMinor?,interestFreePaymentMinor?,annualInterestBps?}` |
+| PATCH `/credit-lines/:id` | Nombre, notas y campos del estado de cuenta opcionales, más `revision`; no modifica el cupo |
+| GET `/credit-lines/balances` | Lista con cupo usado, disponible y campos del estado de cuenta |
 | POST `/debts` ★ | Ejemplo inferior |
 | POST `/debts/:id/payments` ★ | `{walletId,amountMinor,description?,revision}`; devuelve `{debt,payment}` |
 | POST `/debts/:id/reschedule` ★ | `{terms,firstDueOn,mode,additionalFeeMinor?:0,reason,revision}` |
@@ -136,6 +137,8 @@ Venta: retorna `subtotalMinor`, `discountMinor`, `totalMinor`, `costMinor`, `pro
   "creditLineId":"UUID_LINEA_OPCIONAL", "contactId":"UUID_CONTACTO_OPCIONAL", "notes":""
 }
 ```
+
+Los campos de tarjeta son opcionales y aceptan `null` para borrar el valor. `statementCutoffOn` y `paymentDueOn` son fechas `YYYY-MM-DD` del estado de cuenta actual; el vencimiento no puede ser anterior al corte cuando ambos están informados. `minimumPaymentMinor` y `interestFreePaymentMinor` son importes reportados en ese estado de cuenta, en centavos. No se descuentan automáticamente al registrar un abono: actualízalos con el siguiente estado de cuenta. `annualInterestBps` es la tasa anual ordinaria informativa (6590 = 65.90%, hasta 100000 puntos base). No calcula ni carga intereses automáticamente. Ninguno de estos metadatos modifica el cupo utilizado, las deudas o las carteras. Las ediciones se auditan y pueden consultarse en `/history?collection=creditLines`; las líneas existentes sin estos campos siguen siendo válidas. Un PATCH parcial conserva los valores omitidos.
 
 `kind:"credit"` requiere `walletId` y deposita el principal en esa cartera. `deferred` registra obligación sin salida inicial. Omitir las propiedades UUID opcionales si no se usan. `terms`: 1–120; `mode`: `monthly` o `balloon` (capital al final). `feeMinor` es comisión total fija; no una tasa. Estado automático `active` → `settled`. No hay pagos mayores que lo pendiente ni cambios de pagos confirmados. Reprogramar solo afecta lo pendiente y conserva snapshots previos en auditoría. El cupo incluye comisiones. La línea se crea con cupo fijo: no hay endpoint para alterarlo en esta versión.
 
