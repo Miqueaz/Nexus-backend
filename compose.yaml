@@ -1,0 +1,47 @@
+# Desarrollo local. Para producción: MongoDB Atlas o un replica set con TLS y usuarios.
+services:
+  mongo:
+    image: mongo:8.0.16
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand({ping:1}).ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  mongo-init:
+    image: mongo:8.0.16
+    depends_on:
+      mongo:
+        condition: service_healthy
+    entrypoint: ["mongosh", "--host", "mongo:27017", "--quiet", "--eval"]
+    command:
+      - >-
+        try { rs.status() } catch (e) {
+          if (e.code !== 94) throw e;
+          rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]});
+        }
+        let ready=false;
+        for(let i=0;i<60;i++) { if(db.hello().isWritablePrimary){ready=true;break;} sleep(1000); }
+        if(!ready) quit(1);
+  api:
+    build: .
+    env_file: .env
+    environment:
+      MONGO_URI: mongodb://mongo:27017/nexo?replicaSet=rs0
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      mongo-init:
+        condition: service_completed_successfully
+    init: true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+volumes:
+  mongo_data:

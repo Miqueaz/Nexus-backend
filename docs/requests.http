@@ -1,0 +1,102 @@
+### VS Code REST Client: ejecuta en orden; sustituye los IDs de las respuestas.
+@base = http://localhost:3000/api/v1
+@token = PEGAR_ACCESS_TOKEN
+@business = PEGAR_ID_NEGOCIO
+@wallet = PEGAR_ID_CARTERA
+@list = PEGAR_ID_LISTA
+@item = PEGAR_ID_ARTICULO
+
+### Registrar usuario (email único)
+POST {{base}}/auth/register
+Content-Type: application/json
+
+{"name":"Mi usuario","email":"admin@example.com","password":"CambiaEstaClave123!"}
+
+### Login
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{"email":"admin@example.com","password":"CambiaEstaClave123!"}
+
+### Crear negocio; copiar _id a @business
+POST {{base}}/businesses
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"name":"Mi negocio","currency":"MXN","timezone":"America/Mexico_City"}
+
+### Crear cartera; copiar _id a @wallet
+POST {{base}}/businesses/{{business}}/wallets
+Authorization: Bearer {{token}}
+Content-Type: application/json
+Idempotency-Key: demo-wallet-0001
+
+{"name":"Caja principal","kind":"cash","openingBalanceMinor":500000}
+
+### Crear lista flexible; copiar _id a @list
+POST {{base}}/businesses/{{business}}/inventory-lists
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"name":"Materiales","fields":[{"key":"color","label":"Color","type":"text","required":true}]}
+
+### Crear artículo; copiar _id a @item
+POST {{base}}/businesses/{{business}}/items
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"name":"Tela","unit":"metro","listIds":["{{list}}"],"values":{"color":"Azul"},"priceMinor":8500,"costMinor":4000}
+
+### Entrada de 25 metros; usar revision del artículo recién creado
+POST {{base}}/businesses/{{business}}/items/{{item}}/adjustments
+Authorization: Bearer {{token}}
+Content-Type: application/json
+Idempotency-Key: demo-stock-0001
+
+{"deltaMilli":25000,"reason":"Compra inicial","revision":1}
+
+### Venta de 1.5 metros con descuento de 10%; reintentar misma clave no duplica
+POST {{base}}/businesses/{{business}}/sales
+Authorization: Bearer {{token}}
+Content-Type: application/json
+Idempotency-Key: demo-sale-0001
+
+{"walletId":"{{wallet}}","lines":[{"itemId":"{{item}}","quantityMilli":1500}],"discount":{"type":"percent","value":1000,"reason":"Cliente frecuente"},"description":"Venta de tela azul"}
+
+### Egreso de 100.00
+POST {{base}}/businesses/{{business}}/movements
+Authorization: Bearer {{token}}
+Content-Type: application/json
+Idempotency-Key: demo-expense-0001
+
+{"walletId":"{{wallet}}","kind":"expense","amountMinor":10000,"category":"Transporte","description":"Entrega de pedido"}
+
+### Cotización (no afecta dinero ni stock)
+POST {{base}}/businesses/{{business}}/quotes
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"title":"Cotización de materiales","lines":[{"itemId":"{{item}}","quantityMilli":3000}],"expiresOn":"2099-12-31","discount":{"type":"fixed","value":1000,"reason":"Convenio"}}
+
+### Proyección
+POST {{base}}/businesses/{{business}}/projections/calculate
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"name":"Escenario base","months":12,"initialInvestmentMinor":300000,"unitPriceMinor":15000,"unitCostMinor":7000,"quantityMilli":100000,"monthlyGrowthBps":500,"discountBps":500,"salesFeeBps":300,"fixedMonthlyMinor":250000}
+
+### Historial; ajusta at a un instante pasado con zona
+GET {{base}}/businesses/{{business}}/history?collection=wallets&at=2026-10-01T23:59:59.999Z
+Authorization: Bearer {{token}}
+
+### Auditoría
+GET {{base}}/businesses/{{business}}/audit?limit=30
+Authorization: Bearer {{token}}
+
+### Resumen
+GET {{base}}/businesses/{{business}}/summary
+Authorization: Bearer {{token}}
+
+### Finalizar sesión
+POST {{base}}/auth/logout
+Authorization: Bearer {{token}}
