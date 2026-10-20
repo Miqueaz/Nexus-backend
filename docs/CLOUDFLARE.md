@@ -14,7 +14,7 @@ El cliente MongoDB se crea/importa dentro de la primera solicitud y se reutiliza
 
 - Node.js 24 y las dependencias de `npm ci` para compilar y administrar.
 - Cuenta de Cloudflare con Workers y Durable Objects habilitados.
-- La configuración incluye `limits.cpu_ms: 30000`: usa un plan que admita ese límite (Workers Paid). El hashing scrypt mantiene su costo criptográfico; no se debilitó para intentar encajar en el presupuesto de CPU del plan gratuito. La facturación y el rendimiento final deben revisarse en tu cuenta antes del despliegue.
+- Se usan los límites predeterminados de Cloudflare, sin configurar `limits.cpu_ms`, que puede impedir el despliegue en el plan gratuito. Los Durable Objects con SQLite están disponibles tanto en Workers Free como en Paid y tienen 30 segundos de CPU por solicitud de forma predeterminada. El Worker de entrada solo dirige las solicitudes; la autenticación y los servicios se ejecutan en el Durable Object. El hashing scrypt conserva su costo criptográfico. Revisa las cuotas y el rendimiento con tu carga real; no se ha validado un despliegue en una cuenta Free.
 - MongoDB Atlas o un replica set accesible desde Cloudflare, con TLS, usuario y permisos de lectura/escritura para la aplicación. Un MongoDB en localhost no es accesible desde un Worker desplegado.
 - Configurar las reglas de red de la base para permitir las conexiones desde tu despliegue. Workers no proporciona una IP de egreso fija por defecto; no confíes en la IP de tu computadora como permiso del servidor. Define la conectividad adecuada para tu entorno.
 
@@ -58,6 +58,8 @@ npm run workers:deploy
 
 `workers:build` valida y genera el bundle sin publicar. `workers:deploy` publica en tu cuenta y aplica la migración declarada del Durable Object. La URL real se muestra al desplegar; no hay una URL de producción creada por esta entrega.
 
+Si el despliegue termina con `A request to the Cloudflare API (...) failed`, consulta las líneas siguientes del registro: contienen el motivo y, normalmente, un código `[code: ...]`. Ese encabezado por sí solo no identifica la causa. Si aparece el código `100328` indicando que los límites de CPU no están disponibles en Free, verifica que estés desplegando la versión actual sin `limits.cpu_ms`.
+
 Verifica en esa URL:
 
 ```text
@@ -98,4 +100,4 @@ La suite Workers usa el test harness oficial de Wrangler sobre `workerd` y un re
 - Conserva las claves de idempotencia en los reintentos. Una desconexión no demuestra que una transacción haya fallado.
 - Las consultas de historial y calendarios que lean muchos datos deben evaluarse con volumen real. Las pruebas funcionales no sustituyen pruebas de carga, latencia de Atlas ni facturación.
 
-Referencias oficiales: [MongoDB en Workers](https://developers.cloudflare.com/workers/databases/third-party-integrations/mongodb/), [Durable Objects](https://developers.cloudflare.com/durable-objects/), [Node crypto](https://developers.cloudflare.com/workers/runtime-apis/nodejs/crypto/), [Wrangler test harness](https://developers.cloudflare.com/workers/wrangler/api/).
+Referencias oficiales: [MongoDB en Workers](https://developers.cloudflare.com/workers/databases/third-party-integrations/mongodb/), [límites de Durable Objects](https://developers.cloudflare.com/durable-objects/platform/limits/), [configuración de límites de Wrangler](https://developers.cloudflare.com/workers/wrangler/configuration/#limits), [Node crypto](https://developers.cloudflare.com/workers/runtime-apis/nodejs/crypto/), [Wrangler test harness](https://developers.cloudflare.com/workers/wrangler/api/).
