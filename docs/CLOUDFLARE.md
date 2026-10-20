@@ -18,7 +18,15 @@ El cliente MongoDB se crea/importa dentro de la primera solicitud y se reutiliza
 - MongoDB Atlas o un replica set accesible desde Cloudflare, con TLS, usuario y permisos de lectura/escritura para la aplicación. Un MongoDB en localhost no es accesible desde un Worker desplegado.
 - Configurar las reglas de red de la base para permitir las conexiones desde tu despliegue. Workers no proporciona una IP de egreso fija por defecto; no confíes en la IP de tu computadora como permiso del servidor. Define la conectividad adecuada para tu entorno.
 
-## Preparar MongoDB una vez
+## Preparar MongoDB
+
+La configuración del repositorio incluye `vars.MONGO_AUTO_MIGRATE: "true"`. Al abrir su conexión, cada Durable Object comprueba los índices únicos críticos. Si faltan, crea las colecciones e índices con el mismo procedimiento idempotente de `db:migrate` y vuelve a validarlos antes de permitir operaciones. No borra documentos, colecciones ni índices existentes. Los objetos que ya encuentran la base preparada solo comprueban sus restricciones; no repiten la creación de índices.
+
+Con esta opción basta configurar los secretos, desplegar y abrir `GET /health/ready` desde la app o el navegador. La primera consulta puede tardar más mientras prepara la base. El usuario MongoDB debe tener permisos para crear colecciones e índices. Si encuentra duplicados o una definición incompatible, el arranque falla y no comienza a servir operaciones sobre una base sin las restricciones requeridas.
+
+Para separar los permisos de migración de los de la aplicación, usa `MONGO_AUTO_MIGRATE: "false"` y prepara la base con el comando de Node. La opción se interpreta como texto `true` o `false`; fuera de la configuración de Wrangler, su valor predeterminado es `false`.
+
+### Migración manual o cambios posteriores de índices
 
 Configura el `.env` local con `MONGO_URI` y `MONGO_DB` del destino. Usa el mismo nombre de base en `wrangler.jsonc`.
 
@@ -29,14 +37,15 @@ npm run setup
 npm run db:migrate
 ```
 
-`db:migrate` crea colecciones e índices de forma idempotente. Ejecútalo antes de la primera puesta en servicio y al agregar índices en versiones posteriores. Workers no ejecuta esta preparación por solicitud. Al abrir la conexión comprueba los índices únicos críticos; si faltan, devuelve `503 DATABASE_NOT_PREPARED`. El usuario utilizado para la migración necesita permisos de creación de índices/colecciones; la aplicación necesita los permisos de sus operaciones normales.
+`db:migrate` crea colecciones e índices de forma idempotente. Ejecútalo antes de la primera puesta en servicio si desactivaste la preparación automática, y al agregar índices secundarios o TTL en versiones posteriores: la comprobación automática solo detecta la ausencia de las restricciones críticas. Con la preparación automática desactivada, los índices críticos ausentes producen `503 DATABASE_NOT_PREPARED`. El usuario utilizado para la migración necesita permisos de creación de índices/colecciones; la aplicación necesita los permisos de sus operaciones normales.
 
 ## Configurar Cloudflare
 
 Edita `wrangler.jsonc`:
 
 - `name`: nombre del Worker, por defecto `nexis-backend`.
-- `vars.MONGO_DB`: misma base preparada en el paso anterior.
+- `vars.MONGO_DB`: nombre de la base que se utilizará (por ejemplo, `nexo`), nunca el URI de conexión.
+- `vars.MONGO_AUTO_MIGRATE`: `"true"` permite preparar una base nueva al conectarse; `"false"` exige la migración manual previa.
 - `vars.CORS_ORIGINS`: origen real del frontend, o varios separados por comas.
 - `vars.JWT_ISSUER` y `vars.JWT_AUDIENCE`: deben coincidir si quieres conservar la validez de tokens emitidos por otro despliegue.
 - Conserva `nodejs_compat`, la declaración de `BusinessApi` y su migración SQLite.

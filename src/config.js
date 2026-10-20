@@ -3,6 +3,7 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   MONGO_URI: z.string().min(1),
+  MONGO_AUTO_MIGRATE: z.enum(['true', 'false']).default('false'),
   MONGO_DB: z
     .string()
     .regex(/^[a-zA-Z0-9_-]+$/)
@@ -22,6 +23,7 @@ export function readConfig(env = process.env) {
     nodeEnv: c.NODE_ENV,
     port: c.PORT,
     mongoUri: c.MONGO_URI,
+    mongoAutoMigrate: c.MONGO_AUTO_MIGRATE === 'true',
     mongoDb: c.MONGO_DB,
     jwtSecret: c.JWT_SECRET,
     jwtIssuer: c.JWT_ISSUER,

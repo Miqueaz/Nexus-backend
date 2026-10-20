@@ -4,15 +4,16 @@ API REST en **JavaScript ESM / Node.js 24**, Express 5 y MongoDB. Incluye autent
 
 ## Cloudflare Workers
 
-También se incluye un despliegue para Workers con un adaptador Fetch/Hono y Durable Objects que reutilizan MongoDB. Comparte las mismas rutas y reglas del backend Node. Sigue [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md) para preparar índices, configurar secretos y desplegar; todavía no hay un Worker productivo publicado.
+También se incluye un despliegue para Workers con un adaptador Fetch/Hono y Durable Objects que reutilizan MongoDB. Comparte las mismas rutas y reglas del backend Node. Sigue [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md) para configurar secretos y desplegar. La configuración activa `MONGO_AUTO_MIGRATE=true` para preparar una base nueva desde el propio Worker, sin necesitar una terminal local.
 
 ```bash
 npm ci
-npm run db:migrate
 npm run workers:build
 # Después de configurar Cloudflare y sus secretos:
 npm run workers:deploy
 ```
+
+Si desactivas `MONGO_AUTO_MIGRATE` o usas credenciales sin permisos para crear índices, prepara la base antes con `npm run db:migrate` desde Node y credenciales de administración adecuadas.
 
 ## Iniciar
 

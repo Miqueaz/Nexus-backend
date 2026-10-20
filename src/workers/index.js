@@ -19,6 +19,7 @@ export class BusinessApi extends DurableObject {
       this.runtimePromise = (async () => {
         const connection = await connectDatabase(config, {
           initializeIndexes: false,
+          migrateIfNeeded: config.mongoAutoMigrate,
           poolSize: 1,
           monitoringMode: 'poll',
         });

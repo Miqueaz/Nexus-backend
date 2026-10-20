@@ -20,7 +20,12 @@ export const collections = [
 ];
 export async function connectDatabase(
   config,
-  { initializeIndexes = true, poolSize = 20, monitoringMode = 'auto' } = {},
+  {
+    initializeIndexes = true,
+    migrateIfNeeded = false,
+    poolSize = 20,
+    monitoringMode = 'auto',
+  } = {},
 ) {
   // El driver genera valores aleatorios al importarse: cargarlo dentro de una solicitud Workers.
   const { MongoClient } = await import('mongodb');
@@ -39,7 +44,16 @@ export async function connectDatabase(
     if (!hello.setName && hello.msg !== 'isdbgrid')
       throw new Error('MongoDB debe ser un replica set o clúster sharded para transacciones');
     if (initializeIndexes) await ensureIndexes(db);
-    else await assertDatabasePrepared(db);
+    else {
+      try {
+        await assertDatabasePrepared(db);
+      } catch (error) {
+        if (!migrateIfNeeded || error.code !== 'DATABASE_NOT_PREPARED') throw error;
+        // Preparación idempotente de una base nueva; nunca elimina datos ni índices.
+        await ensureIndexes(db);
+        await assertDatabasePrepared(db);
+      }
+    }
     return { client, db };
   } catch (error) {
     await client.close();

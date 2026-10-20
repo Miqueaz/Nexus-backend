@@ -8,6 +8,7 @@
   "vars": {
     "NODE_ENV": "production",
     "MONGO_DB": "nexo",
+    "MONGO_AUTO_MIGRATE": "true",
     "JWT_ISSUER": "nexo-api",
     "JWT_AUDIENCE": "nexo-app",
     "ACCESS_TOKEN_MINUTES": "30",

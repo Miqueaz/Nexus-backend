@@ -21,12 +21,11 @@ before(
     });
     client = await new MongoClient(rs.getUri()).connect();
     db = client.db('nexo_workers_' + randomUUID().replaceAll('-', ''));
-    await ensureIndexes(db);
     server = createTestHarness({
       workers: [
         {
           configPath: './wrangler.jsonc',
-          vars: { MONGO_DB: db.databaseName, LOG_LEVEL: 'silent' },
+          vars: { MONGO_DB: db.databaseName, MONGO_AUTO_MIGRATE: 'true', LOG_LEVEL: 'silent' },
           secrets: { MONGO_URI: rs.getUri(), JWT_SECRET: 'workers-test-secret-'.repeat(6) },
         },
       ],
@@ -94,6 +93,23 @@ test('Workerd inicia el bundle, aplica CORS y rechaza JSON/cuerpos inválidos si
     '192.0.2.11',
   );
   assert.equal(oversized.status, 413);
+});
+test('Workerd prepara una base nueva desde varios objetos sin borrar datos existentes', async () => {
+  assert.equal((await db.listCollections().toArray()).length, 0);
+  await db.collection('bootstrapSentinel').insertOne({ _id: 'existing', value: 'conservar' });
+  const [ready, unauthorized] = await Promise.all([
+    call('GET', '/health/ready'),
+    call('GET', '/api/v1/businesses/11111111-1111-4111-8111-111111111111/wallets'),
+  ]);
+  assert.equal(ready.status, 200, JSON.stringify(ready.data));
+  assert.equal(unauthorized.status, 401, JSON.stringify(unauthorized.data));
+  await assertDatabasePrepared(db);
+  assert.equal(
+    (await db.collection('bootstrapSentinel').findOne({ _id: 'existing' })).value,
+    'conservar',
+  );
+  const indexes = await db.collection('sessions').listIndexes().toArray();
+  assert.ok(indexes.some((i) => i.key.expiresAt === 1 && i.expireAfterSeconds === 0));
 });
 test('Workerd ejecuta scrypt, Bearer JWT, MongoDB, aislamiento y revocación', async () => {
   const f = await fixture();
