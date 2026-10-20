@@ -267,3 +267,98 @@ test('Dos ventas concurrentes en Workerd no consumen las mismas existencias', as
   assert.deepEqual(results.map((r) => r.status).sort(), [201, 422]);
   assert.equal(await db.collection('sales').countDocuments({ businessId: f.businessId }), 1);
 });
+
+test('Workerd protege edición y eliminación con saldo/deuda y conserva el borrado lógico', async () => {
+  const f = await fixture();
+  const w = await call(
+    'POST',
+    f.base + '/wallets',
+    { name: 'Cuenta', openingBalanceMinor: 100 },
+    f.token,
+    randomUUID(),
+  );
+  let r = await call(
+    'PATCH',
+    f.base + '/wallets/' + w.data._id,
+    { archived: true, revision: w.data.revision },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(r.status, 409, JSON.stringify(r.data));
+  assert.equal(r.data.error.code, 'WALLET_HAS_BALANCE');
+  await call(
+    'POST',
+    f.base + '/movements',
+    { walletId: w.data._id, kind: 'expense', amountMinor: 100, category: 'Cierre' },
+    f.token,
+    randomUUID(),
+  );
+  r = await call('GET', f.base + '/wallets/' + w.data._id, undefined, f.token);
+  r = await call(
+    'PATCH',
+    f.base + '/wallets/' + w.data._id,
+    { name: 'Renombrada', kind: 'cash', archived: true, revision: r.data.revision },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.archived, true);
+  const line = await call(
+    'POST',
+    f.base + '/credit-lines',
+    { name: 'Línea', limitMinor: 1000 },
+    f.token,
+    randomUUID(),
+  );
+  const debt = await call(
+    'POST',
+    f.base + '/debts',
+    {
+      name: 'Compra',
+      kind: 'deferred',
+      creditLineId: line.data._id,
+      principalMinor: 100,
+      feeMinor: 1,
+      terms: 1,
+      firstDueOn: '2027-01-01',
+    },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(debt.status, 201, JSON.stringify(debt.data));
+  for (const patch of [{ archived: true }, { name: 'Cambio' }, { limitMinor: 2000 }]) {
+    r = await call(
+      'PATCH',
+      f.base + '/credit-lines/' + line.data._id,
+      { ...patch, revision: 2 },
+      f.token,
+      randomUUID(),
+    );
+    assert.equal(r.status, 409, JSON.stringify(r.data));
+    assert.equal(r.data.error.code, 'CREDIT_LINE_HAS_DEBT');
+  }
+  const empty = await call(
+    'POST',
+    f.base + '/credit-lines',
+    { name: 'Sin deuda', limitMinor: 1000 },
+    f.token,
+    randomUUID(),
+  );
+  r = await call(
+    'PATCH',
+    f.base + '/credit-lines/' + empty.data._id,
+    { limitMinor: 2000, revision: 1 },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  r = await call(
+    'PATCH',
+    f.base + '/credit-lines/' + empty.data._id,
+    { archived: true, revision: r.data.revision },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.archived, true);
+});

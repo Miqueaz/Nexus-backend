@@ -17,9 +17,15 @@ export const creditLineCreateSchema = z.strictObject({
   ...statementFields,
 });
 
-// El cupo sigue siendo fijo; editar metadatos nunca cambia deudas ni saldos.
+// El servicio permite editar cupo y datos solo cuando no existen obligaciones pendientes.
 export const creditLineUpdateSchema = z
-  .strictObject({ name: text, notes, ...statementFields })
+  .strictObject({
+    name: text,
+    limitMinor: amount,
+    archived: z.boolean(),
+    notes,
+    ...statementFields,
+  })
   .partial()
   .extend({ revision });
 

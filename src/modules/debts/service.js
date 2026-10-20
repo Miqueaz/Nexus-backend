@@ -19,7 +19,7 @@ import {
 } from './credit-lines.js';
 const terms = z.number().int().min(1).max(120);
 const mode = z.enum(['monthly', 'balloon']);
-export function createDebtsService({ commands, finance, contacts }) {
+export function createDebtsService({ commands, finance, contacts, financialManagement }) {
   async function capacity(tx, lineId, additionalMinor, ignoreDebtId) {
     if (!lineId) return;
     const line = await tx.get('creditLines', lineId);
@@ -53,6 +53,7 @@ export function createDebtsService({ commands, finance, contacts }) {
       const d = parsePatch(creditLineUpdateSchema, input);
       return commands.run(ctx, 'creditLine.updated', { lineId, ...d }, async (tx) => {
         const line = await tx.get('creditLines', lineId);
+        await financialManagement.assertLineEmpty(tx, line);
         assertStatementDates({ ...line, ...d });
         return tx.update('creditLines', lineId, d.revision, d);
       });

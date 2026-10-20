@@ -48,7 +48,7 @@ Las escrituras devuelven el documento creado/actualizado salvo donde se indique.
 | Método y ruta | Entrada |
 |---|---|
 | POST `/wallets` ★ | `{name,kind?:"cash"\|"bank"\|"card",openingBalanceMinor?:0,allowNegative?:false}` |
-| PATCH `/wallets/:id` | `{name?,archived?,revision}` |
+| PATCH `/wallets/:id` | `{name?,kind?:"cash"\|"bank"\|"card",archived?,revision}` |
 | POST `/movements` ★ | `{walletId,kind:"income"\|"expense",amountMinor,category,description?,occurredOn?}` |
 | POST `/transfers` ★ | `{fromWalletId,toWalletId,amountMinor,description?}`; devuelve `{from,to}` |
 | GET `/summary?from=2026-01-01&to=2026-12-31` | Entradas/salidas y neto operativo del período; carteras con saldo actual |
@@ -124,7 +124,7 @@ Venta: retorna `subtotalMinor`, `discountMinor`, `totalMinor`, `costMinor`, `pro
 | Método y ruta | Entrada |
 |---|---|
 | POST `/credit-lines` | `{name,limitMinor,notes?,statementCutoffOn?,paymentDueOn?,minimumPaymentMinor?,interestFreePaymentMinor?,annualInterestBps?}` |
-| PATCH `/credit-lines/:id` | Nombre, notas y campos del estado de cuenta opcionales, más `revision`; no modifica el cupo |
+| PATCH `/credit-lines/:id` | `{name?,limitMinor?,archived?,notes?,...estadoDeCuenta,revision}`; requiere deuda cero |
 | GET `/credit-lines/balances` | Lista con cupo usado, disponible y campos del estado de cuenta |
 | POST `/debts` ★ | Ejemplo inferior |
 | POST `/debts/:id/payments` ★ | `{walletId,amountMinor,description?,revision}`; devuelve `{debt,payment}` |
@@ -140,7 +140,7 @@ Venta: retorna `subtotalMinor`, `discountMinor`, `totalMinor`, `costMinor`, `pro
 
 Los campos de tarjeta son opcionales y aceptan `null` para borrar el valor. `statementCutoffOn` y `paymentDueOn` son fechas `YYYY-MM-DD` del estado de cuenta actual; el vencimiento no puede ser anterior al corte cuando ambos están informados. `minimumPaymentMinor` y `interestFreePaymentMinor` son importes reportados en ese estado de cuenta, en centavos. No se descuentan automáticamente al registrar un abono: actualízalos con el siguiente estado de cuenta. `annualInterestBps` es la tasa anual ordinaria informativa (6590 = 65.90%, hasta 100000 puntos base). No calcula ni carga intereses automáticamente. Ninguno de estos metadatos modifica el cupo utilizado, las deudas o las carteras. Las ediciones se auditan y pueden consultarse en `/history?collection=creditLines`; las líneas existentes sin estos campos siguen siendo válidas. Un PATCH parcial conserva los valores omitidos.
 
-`kind:"credit"` requiere `walletId` y deposita el principal en esa cartera. `deferred` registra obligación sin salida inicial. Omitir las propiedades UUID opcionales si no se usan. `terms`: 1–120; `mode`: `monthly` o `balloon` (capital al final). `feeMinor` es comisión total fija; no una tasa. Estado automático `active` → `settled`. No hay pagos mayores que lo pendiente ni cambios de pagos confirmados. Reprogramar solo afecta lo pendiente y conserva snapshots previos en auditoría. El cupo incluye comisiones. La línea se crea con cupo fijo: no hay endpoint para alterarlo en esta versión.
+`kind:"credit"` requiere `walletId` y deposita el principal en esa cartera. `deferred` registra obligación sin salida inicial. Omitir las propiedades UUID opcionales si no se usan. `terms`: 1–120; `mode`: `monthly` o `balloon` (capital al final). `feeMinor` es comisión total fija; no una tasa. Estado automático `active` → `settled`. No hay pagos mayores que lo pendiente ni cambios de pagos confirmados. Reprogramar solo afecta lo pendiente y conserva snapshots previos en auditoría. El cupo incluye comisiones. El cupo puede editarse cuando no hay capital ni cargos pendientes.
 
 ## Proyectos, calendario y proyecciones
 
@@ -183,3 +183,10 @@ Tarea: `{id:"UUID",title:"Comprar insumos",done:false}`. Calendario: rango máxi
 ```
 
 400 JSON/cabeceras inválidos; 401 token inválido o sesión finalizada; 403 permiso insuficiente; 404 entidad/ruta ajena o inexistente; 409 revisión, idempotencia o duplicado; 413 cuerpo >256KB; 422 datos o regla del dominio; 429 demasiados intentos de login/registro; 500 fallo interno. En validación, `details` lista `{path,message}`. Siempre se devuelve `X-Request-Id`. Para conciliar un error, busca el mismo identificador en los logs.
+
+
+### Edición y eliminación de cuentas y líneas
+
+Tanto editar como eliminar requieren saldo cero. En cuentas se comprueba `balanceMinor === 0` (también se bloquean saldos negativos) y que no queden créditos recibidos en esa cuenta con capital o cargos pendientes. En líneas se comprueba cada deuda vinculada, incluidos cargos pendientes; el cupo disponible no es efectivo y no impide eliminar.
+
+La eliminación es lógica: `PATCH /wallets/:id` o `/credit-lines/:id` con `{archived:true,revision}` e `Idempotency-Key`. No borra movimientos, pagos ni auditoría. La interfaz oculta las eliminadas de las tarjetas y selectores; siguen disponibles para referencias e historial. Los rechazos son `409 WALLET_HAS_BALANCE`, `WALLET_HAS_DEBT` o `CREDIT_LINE_HAS_DEBT`. Permisos, revisiones y auditoría se conservan. La comprobación y escritura se ejecutan en la misma transacción; los movimientos y las disposiciones concurrentes actualizan el mismo agregado y no pueden dejar una cuenta eliminada con saldo ni una línea eliminada con deuda.

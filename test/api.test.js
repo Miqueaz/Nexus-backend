@@ -539,7 +539,7 @@ test('Líneas antiguas conservan datos; fechas, importes, revisión y permisos s
     { annualInterestBps: -1 },
     { annualInterestBps: 1.5 },
     { statementCutoffOn: '2026-02-30' },
-    { limitMinor: 100 },
+    { limitMinor: 0 },
     { statementCutoffOn: '2026-11-10', paymentDueOn: '2026-11-01' },
   ])
     await call(f, 'patch', `/credit-lines/${line._id}`, {
@@ -584,4 +584,219 @@ test('Login valida credenciales y persiste seguridad sin secretos', async () => 
   const serialized = JSON.stringify(events);
   assert.ok(!serialized.includes('UnaClaveLarga'));
   assert.ok(!serialized.includes('accessToken'));
+});
+
+test('Cuentas solo se editan o eliminan con saldo cero, conservando movimientos e historial', async () => {
+  const f = await fixture();
+  const w = await wallet(f, 100);
+  for (const patch of [{ name: 'Otro nombre' }, { kind: 'cash' }, { archived: true }]) {
+    const result = await call(f, 'patch', `/wallets/${w._id}`, {
+      ...patch,
+      revision: w.revision,
+    }).expect(409);
+    assert.equal(result.body.error.code, 'WALLET_HAS_BALANCE');
+  }
+  await call(f, 'post', '/movements', {
+    walletId: w._id,
+    kind: 'expense',
+    amountMinor: 100,
+    category: 'Retiro',
+  }).expect(201);
+  let current = (await call(f, 'get', `/wallets/${w._id}`).expect(200)).body;
+  current = (
+    await call(f, 'patch', `/wallets/${w._id}`, {
+      name: 'Caja cerrada',
+      kind: 'cash',
+      revision: current.revision,
+    }).expect(200)
+  ).body;
+  const at = new Date().toISOString();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const key = randomUUID(),
+    body = { archived: true, revision: current.revision };
+  const deleted = (await call(f, 'patch', `/wallets/${w._id}`, body, key).expect(200)).body;
+  const repeated = (await call(f, 'patch', `/wallets/${w._id}`, body, key).expect(200)).body;
+  assert.equal(deleted.archived, true);
+  assert.equal(repeated.revision, deleted.revision);
+  assert.equal((await call(f, 'get', '/wallets?archived=false').expect(200)).body.data.length, 0);
+  const history = (
+    await call(f, 'get', '/history?collection=wallets&at=' + encodeURIComponent(at)).expect(200)
+  ).body;
+  assert.equal(history.data[0].archived, false);
+  assert.equal(history.data[0].name, 'Caja cerrada');
+  assert.equal(await db.collection('movements').countDocuments({ businessId: f.business._id }), 2);
+  assert.equal(
+    await db
+      .collection('audit')
+      .countDocuments({ businessId: f.business._id, action: 'wallet.updated' }),
+    2,
+  );
+  const income = await call(f, 'post', '/movements', {
+    walletId: w._id,
+    kind: 'income',
+    amountMinor: 1,
+    category: 'Prueba',
+  }).expect(422);
+  assert.equal(income.body.error.code, 'WALLET_ARCHIVED');
+  const negative = (
+    await call(f, 'post', '/wallets', { name: 'Negativa', allowNegative: true }).expect(201)
+  ).body;
+  await call(f, 'post', '/movements', {
+    walletId: negative._id,
+    kind: 'expense',
+    amountMinor: 1,
+    category: 'Gasto',
+  }).expect(201);
+  await call(f, 'patch', `/wallets/${negative._id}`, { archived: true, revision: 2 }).expect(409);
+});
+
+test('Cuenta vacía con crédito recibido pendiente permanece bloqueada hasta liquidar cargos y capital', async () => {
+  const f = await fixture(),
+    w = await wallet(f, 0),
+    payer = await wallet(f, 200);
+  const debt = (
+    await call(f, 'post', '/debts', {
+      name: 'Crédito',
+      kind: 'credit',
+      walletId: w._id,
+      principalMinor: 100,
+      feeMinor: 10,
+      terms: 1,
+      firstDueOn: '2027-01-01',
+    }).expect(201)
+  ).body;
+  await call(f, 'post', '/transfers', {
+    fromWalletId: w._id,
+    toWalletId: payer._id,
+    amountMinor: 100,
+  }).expect(201);
+  for (const patch of [{ name: 'Cambio' }, { archived: true }]) {
+    const r = await call(f, 'patch', `/wallets/${w._id}`, { ...patch, revision: 3 }).expect(409);
+    assert.equal(r.body.error.code, 'WALLET_HAS_DEBT');
+  }
+  await call(f, 'post', `/debts/${debt._id}/payments`, {
+    walletId: payer._id,
+    amountMinor: 110,
+    revision: debt.revision,
+  }).expect(201);
+  await call(f, 'patch', `/wallets/${w._id}`, { archived: true, revision: 3 }).expect(200);
+});
+
+test('Línea bloquea edición y eliminación con deuda; al liquidar permite cambiar cupo y eliminar', async () => {
+  const f = await fixture(),
+    payer = await wallet(f, 1000);
+  let line = (
+    await call(f, 'post', '/credit-lines', { name: 'Tarjeta', limitMinor: 1000 }).expect(201)
+  ).body;
+  let debt = (
+    await call(f, 'post', '/debts', {
+      name: 'Compra',
+      kind: 'deferred',
+      creditLineId: line._id,
+      principalMinor: 100,
+      feeMinor: 10,
+      terms: 1,
+      firstDueOn: '2027-01-01',
+    }).expect(201)
+  ).body;
+  for (const patch of [
+    { name: 'Cambio' },
+    { minimumPaymentMinor: 0 },
+    { limitMinor: 2000 },
+    { archived: true },
+  ]) {
+    const r = await call(f, 'patch', `/credit-lines/${line._id}`, { ...patch, revision: 2 }).expect(
+      409,
+    );
+    assert.equal(r.body.error.code, 'CREDIT_LINE_HAS_DEBT');
+  }
+  debt = (
+    await call(f, 'post', `/debts/${debt._id}/payments`, {
+      walletId: payer._id,
+      amountMinor: 109,
+      revision: debt.revision,
+    }).expect(201)
+  ).body.debt;
+  await call(f, 'patch', `/credit-lines/${line._id}`, { archived: true, revision: 3 }).expect(409);
+  await call(f, 'post', `/debts/${debt._id}/payments`, {
+    walletId: payer._id,
+    amountMinor: 1,
+    revision: debt.revision,
+  }).expect(201);
+  line = (await call(f, 'get', `/credit-lines/${line._id}`).expect(200)).body;
+  line = (
+    await call(f, 'patch', `/credit-lines/${line._id}`, {
+      limitMinor: 2000,
+      name: 'Renovada',
+      revision: line.revision,
+    }).expect(200)
+  ).body;
+  await call(f, 'patch', `/credit-lines/${line._id}`, { archived: true, revision: 1 }).expect(409);
+  const at = new Date().toISOString();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const viewer = await user();
+  await call(f, 'post', '/members', { email: viewer.email, role: 'viewer' }).expect(201);
+  await call({ ...f, token: viewer.token }, 'patch', `/credit-lines/${line._id}`, {
+    archived: true,
+    revision: line.revision,
+  }).expect(403);
+  await call(f, 'patch', `/credit-lines/${line._id}`, {
+    archived: true,
+    revision: line.revision,
+  }).expect(200);
+  const blocked = await call(f, 'post', '/debts', {
+    name: 'Otra',
+    kind: 'deferred',
+    creditLineId: line._id,
+    principalMinor: 100,
+    terms: 1,
+    firstDueOn: '2027-01-01',
+  }).expect(422);
+  assert.equal(blocked.body.error.code, 'CREDIT_LINE_ARCHIVED');
+  assert.equal(await db.collection('debts').countDocuments({ businessId: f.business._id }), 1);
+  assert.equal(
+    await db.collection('debtPayments').countDocuments({ businessId: f.business._id }),
+    2,
+  );
+  const history = (
+    await call(f, 'get', '/history?collection=creditLines&at=' + encodeURIComponent(at)).expect(200)
+  ).body;
+  assert.equal(history.data[0].limitMinor, 2000);
+  assert.equal(history.data[0].archived, false);
+});
+
+test('Eliminar concurrentemente con ingreso o compra no deja saldos o deudas en registros eliminados', async () => {
+  const f = await fixture(),
+    w = await wallet(f, 0);
+  const results = await Promise.all([
+    call(f, 'patch', `/wallets/${w._id}`, { archived: true, revision: 1 }),
+    call(f, 'post', '/movements', {
+      walletId: w._id,
+      kind: 'income',
+      amountMinor: 100,
+      category: 'Ingreso',
+    }),
+  ]);
+  assert.equal(results.filter((r) => r.status < 300).length, 1);
+  const current = (await call(f, 'get', `/wallets/${w._id}`).expect(200)).body;
+  assert.ok(current.archived ? current.balanceMinor === 0 : current.balanceMinor === 100);
+  const line = (
+    await call(f, 'post', '/credit-lines', { name: 'Concurrente', limitMinor: 1000 }).expect(201)
+  ).body;
+  const raced = await Promise.all([
+    call(f, 'patch', `/credit-lines/${line._id}`, { archived: true, revision: 1 }),
+    call(f, 'post', '/debts', {
+      name: 'Compra',
+      kind: 'deferred',
+      creditLineId: line._id,
+      principalMinor: 100,
+      terms: 1,
+      firstDueOn: '2027-01-01',
+    }),
+  ]);
+  assert.equal(raced.filter((r) => r.status < 300).length, 1);
+  const balance = (await call(f, 'get', '/credit-lines/balances').expect(200)).body.find(
+    (l) => l._id === line._id,
+  );
+  assert.ok(balance.archived ? balance.usedMinor === 0 : balance.usedMinor === 100);
 });

@@ -133,3 +133,5 @@ Si el sistema de archivos temporal no soporta el bloqueo que necesita MongoDB, s
 Las pruebas cubren autenticación/revocación, aislamiento y roles, descuentos, idempotencia, venta atómica/rollback, sobreventa concurrente, validación dinámica, revisión, historial, conversión única de cotizaciones, pagos/reprogramación y límites concurrentes de crédito. Consulta `docs/VALIDACION.md` para los resultados y límites de la verificación.
 
 Documentación técnica consultada: [transacciones del driver oficial MongoDB](https://www.mongodb.com/docs/drivers/node/current/crud/transactions/), [Express 5](https://expressjs.com/en/api/) y [jose jwtVerify](https://github.com/panva/jose/blob/main/docs/jwt/verify/functions/jwtVerify.md).
+
+Las cuentas y líneas admiten edición y eliminación lógica solo sin saldo ni obligaciones pendientes. Puedes editar el nombre/tipo de una cuenta o el nombre/cupo/datos de una línea. El historial se conserva; consulta las reglas en [API](docs/API.md#edición-y-eliminación-de-cuentas-y-líneas).

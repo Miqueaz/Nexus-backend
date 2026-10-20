@@ -17,6 +17,7 @@ import { createPlanningService } from './modules/planning/resources.js';
 import { createProjectionsService } from './modules/planning/projections.js';
 import { createDebtsService } from './modules/debts/service.js';
 import { createFinanceAdapter } from './adapters/modules/finance.js';
+import { createFinancialManagementAdapter } from './adapters/modules/financial-management.js';
 import { createInventoryAdapter } from './adapters/modules/inventory.js';
 import { createContactsAdapter } from './adapters/modules/contacts.js';
 import { createSalesAdapter } from './adapters/modules/sales.js';
@@ -25,6 +26,7 @@ export async function createContainer({ client, db, config, logger }) {
   const audit = createAuditAdapter(db);
   const commands = createCommands({ uow, idempotency: createIdempotencyStore(db), audit, logger });
   const finance = createFinanceAdapter();
+  const financialManagement = createFinancialManagementAdapter();
   const inventory = createInventoryAdapter();
   const contacts = createContactsAdapter();
   const sales = createSalesService({ commands, inventory, finance, contacts });
@@ -36,7 +38,7 @@ export async function createContainer({ client, db, config, logger }) {
       audit,
       commands,
     }),
-    finance: createFinanceService({ commands, finance }),
+    finance: createFinanceService({ commands, finance, financialManagement }),
     inventory: createInventoryService({ commands }),
     inventoryLists: createListService({
       commands,
@@ -58,7 +60,7 @@ export async function createContainer({ client, db, config, logger }) {
     }),
     planning: createPlanningService({ commands }),
     projections: createProjectionsService({ commands }),
-    debts: createDebtsService({ commands, finance, contacts }),
+    debts: createDebtsService({ commands, finance, contacts, financialManagement }),
     queries: createQueries({ db, commands }),
   };
 }

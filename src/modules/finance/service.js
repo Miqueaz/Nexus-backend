@@ -1,6 +1,6 @@
 import { z, text, notes, money, amount, id, date, revision } from '../../core/validation.js';
 import { ensure } from '../../core/errors.js';
-export function createFinanceService({ commands, finance }) {
+export function createFinanceService({ commands, finance, financialManagement }) {
   return {
     createWallet(ctx, input) {
       const d = z
@@ -34,11 +34,18 @@ export function createFinanceService({ commands, finance }) {
     updateWallet(ctx, walletId, input) {
       id.parse(walletId);
       const d = z
-        .strictObject({ name: text.optional(), archived: z.boolean().optional(), revision })
+        .strictObject({
+          name: text.optional(),
+          kind: z.enum(['cash', 'bank', 'card']).optional(),
+          archived: z.boolean().optional(),
+          revision,
+        })
         .parse(input);
-      return commands.run(ctx, 'wallet.updated', { walletId, ...d }, (tx) =>
-        tx.update('wallets', walletId, d.revision, d),
-      );
+      return commands.run(ctx, 'wallet.updated', { walletId, ...d }, async (tx) => {
+        const wallet = await tx.get('wallets', walletId);
+        await financialManagement.assertWalletEmpty(tx, wallet);
+        return tx.update('wallets', walletId, d.revision, d);
+      });
     },
     record(ctx, input) {
       const d = z
