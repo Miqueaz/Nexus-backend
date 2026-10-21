@@ -19,6 +19,42 @@ export function buildSchedule(principalMinor, feeMinor, terms, firstDueOn, mode)
     paidFeeMinor: 0,
   }));
 }
+/** Custom installment totals preserve principal and known fees, in integer cents. */
+export function buildCustomSchedule(principalMinor, feeMinor, installmentsMinor, firstDueOn) {
+  ensure(
+    Array.isArray(installmentsMinor) &&
+      installmentsMinor.length > 0 &&
+      installmentsMinor.length <= 120,
+    422,
+    'INVALID_SCHEDULE',
+    'Selecciona entre 1 y 120 mensualidades',
+  );
+  ensure(
+    installmentsMinor.every((n) => Number.isSafeInteger(n) && n >= 0 && n <= 100_000_000_000),
+    422,
+    'INVALID_SCHEDULE',
+    'Los importes mensuales deben ser centavos enteros y no negativos',
+  );
+  const total = installmentsMinor.reduce((sum, n) => sum + n, 0);
+  ensure(
+    Number.isSafeInteger(total) && total === principalMinor + feeMinor && total > 0,
+    422,
+    'SCHEDULE_TOTAL_MISMATCH',
+    'La suma de los pagos debe coincidir con el saldo pendiente más los cargos adicionales',
+  );
+  let feesLeft = feeMinor;
+  return installmentsMinor.map((amountMinor, i) => {
+    const fees = Math.min(amountMinor, feesLeft);
+    feesLeft -= fees;
+    return {
+      dueOn: addMonths(firstDueOn, i),
+      principalMinor: amountMinor - fees,
+      feeMinor: fees,
+      paidPrincipalMinor: 0,
+      paidFeeMinor: 0,
+    };
+  });
+}
 export function allocatePayment(schedule, amountMinor) {
   const next = structuredClone(schedule);
   let remaining = amountMinor;

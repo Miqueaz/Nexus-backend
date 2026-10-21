@@ -1138,3 +1138,91 @@ test('Snapshot agrupa lecturas con aislamiento, historial y paginación sin trun
   assert.equal(new Set([...first.data, ...rest.data].map((row) => row._id)).size, 103);
   assert.equal(rest.nextCursor, null);
 });
+
+test('Reprogramación manual valida totales y conserva abonos, efectivo, revisión y auditoría', async () => {
+  const f = await fixture(),
+    w = await wallet(f, 200000);
+  const d = (
+    await call(f, 'post', '/debts', {
+      name: 'Plan variable',
+      kind: 'deferred',
+      principalMinor: 100001,
+      feeMinor: 1000,
+      terms: 2,
+      firstDueOn: '2028-01-31',
+    }).expect(201)
+  ).body;
+  const paid = (
+    await call(f, 'post', `/debts/${d._id}/payments`, {
+      walletId: w._id,
+      amountMinor: 10001,
+      revision: 1,
+    }).expect(201)
+  ).body;
+  const base = {
+    terms: 3,
+    firstDueOn: '2028-03-31',
+    mode: 'custom',
+    additionalFeeMinor: 500,
+    reason: 'Ingresos variables',
+    revision: 2,
+  };
+  for (const installmentsMinor of [
+    [20000, 0, 71000],
+    [20000, 0, 72000],
+    [-1, 0, 91501],
+    [20000, 71500],
+    [20000.5, 0, 71499.5],
+  ]) {
+    await call(f, 'post', `/debts/${d._id}/reschedule`, { ...base, installmentsMinor }).expect(422);
+  }
+  await call(f, 'post', `/debts/${d._id}/reschedule`, base).expect(422);
+  await call(f, 'post', `/debts/${d._id}/reschedule`, {
+    ...base,
+    mode: 'monthly',
+    installmentsMinor: [20000, 0, 71500],
+  }).expect(422);
+  const updated = (
+    await call(f, 'post', `/debts/${d._id}/reschedule`, {
+      ...base,
+      installmentsMinor: [20000, 0, 71500],
+    }).expect(201)
+  ).body;
+  assert.equal(updated.mode, 'custom');
+  const audit = await db
+    .collection('audit')
+    .find({ businessId: f.business._id, action: 'debt.rescheduled' })
+    .toArray();
+  assert.equal(audit.length, 1);
+  assert.deepEqual(
+    audit[0].after.schedule.slice(-3).map((r) => r.principalMinor + r.feeMinor),
+    [20000, 0, 71500],
+  );
+  assert.equal(updated.paidPrincipalMinor, paid.debt.paidPrincipalMinor);
+  assert.equal(updated.paidFeeMinor, paid.debt.paidFeeMinor);
+  assert.deepEqual(
+    updated.schedule.slice(-3).map((r) => r.principalMinor + r.feeMinor),
+    [20000, 0, 71500],
+  );
+  assert.equal(updated.schedule[0].principalMinor, paid.debt.paidPrincipalMinor);
+  assert.equal(updated.schedule[0].feeMinor, paid.debt.paidFeeMinor);
+  const summary = (await call(f, 'get', '/summary').expect(200)).body;
+  assert.equal(summary.wallets[0].balanceMinor, 189999);
+  await call(f, 'post', `/debts/${d._id}/reschedule`, {
+    ...base,
+    installmentsMinor: [20000, 0, 71500],
+  }).expect(409);
+  const settled = (
+    await call(f, 'post', `/debts/${d._id}/payments`, {
+      walletId: w._id,
+      amountMinor: 91500,
+      revision: updated.revision,
+    }).expect(201)
+  ).body;
+  assert.equal(settled.debt.status, 'settled');
+  await call(f, 'post', `/debts/${d._id}/reschedule`, {
+    ...base,
+    revision: settled.debt.revision,
+    installmentsMinor: [20000, 0, 71500],
+  }).expect(409);
+});

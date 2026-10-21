@@ -66,3 +66,31 @@ test('Campos dinámicos rechazan claves desconocidas y links ejecutables', () =>
     { ok: false },
   );
 });
+
+test('Pagos personalizados conservan centavos, cargos y meses sin pago', async () => {
+  const { buildCustomSchedule } = await import('../src/modules/debts/schedule.js');
+  const schedule = buildCustomSchedule(90001, 999, [10000, 0, 81000], '2028-01-31');
+  assert.deepEqual(
+    schedule.map((r) => r.dueOn),
+    ['2028-01-31', '2028-02-29', '2028-03-31'],
+  );
+  assert.equal(
+    schedule.reduce((n, r) => n + r.principalMinor, 0),
+    90001,
+  );
+  assert.equal(
+    schedule.reduce((n, r) => n + r.feeMinor, 0),
+    999,
+  );
+  assert.equal(schedule[0].feeMinor, 999);
+  assert.deepEqual(
+    schedule.map((r) => r.principalMinor + r.feeMinor),
+    [10000, 0, 81000],
+  );
+  const paid = allocatePayment(schedule, 91000);
+  assert.equal(paid.principalMinor, 90001);
+  assert.equal(paid.feeMinor, 999);
+  for (const amounts of [[10000, 0, 80999], [10000, 0, 81001], [-1, 91001], [0.5, 90999.5], []]) {
+    assert.throws(() => buildCustomSchedule(90001, 999, amounts, '2028-01-31'));
+  }
+});

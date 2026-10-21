@@ -11,7 +11,7 @@ import {
 } from '../../core/validation.js';
 import { ensure } from '../../core/errors.js';
 import { safeInteger } from '../../core/money.js';
-import { buildSchedule, allocatePayment, pending } from './schedule.js';
+import { buildSchedule, buildCustomSchedule, allocatePayment, pending } from './schedule.js';
 import {
   creditLineCreateSchema,
   creditLineUpdateSchema,
@@ -221,17 +221,47 @@ export function createDebtsService({ commands, finance, contacts, financialManag
         .strictObject({
           terms,
           firstDueOn: date,
-          mode,
+          mode: z.enum(['monthly', 'balloon', 'custom']),
+          installmentsMinor: z.array(money).min(1).max(120).optional(),
           additionalFeeMinor: money.default(0),
           reason: text,
           revision,
         })
         .parse(input);
+      ensure(
+        d.mode === 'custom'
+          ? d.installmentsMinor?.length === d.terms
+          : d.installmentsMinor === undefined,
+        422,
+        'INVALID_SCHEDULE',
+        'El plan personalizado requiere un importe por cada mes; los demás planes no admiten importes manuales',
+      );
       return commands.run(ctx, 'debt.rescheduled', { debtId, ...d }, async (tx) => {
         const debt = await tx.get('debts', debtId);
         ensure(debt.status === 'active', 409, 'DEBT_SETTLED', 'La deuda está liquidada');
+        ensure(
+          debt.revision === d.revision,
+          409,
+          'REVISION_CONFLICT',
+          'La deuda cambió; recarga su versión',
+        );
         const remaining = pending(debt);
         const feeMinor = safeInteger(debt.feeMinor + d.additionalFeeMinor);
+        const schedule =
+          d.mode === 'custom'
+            ? buildCustomSchedule(
+                remaining.principalMinor,
+                remaining.feeMinor + d.additionalFeeMinor,
+                d.installmentsMinor,
+                d.firstDueOn,
+              )
+            : buildSchedule(
+                remaining.principalMinor,
+                remaining.feeMinor + d.additionalFeeMinor,
+                d.terms,
+                d.firstDueOn,
+                d.mode,
+              );
         await capacity(
           tx,
           debt.creditLineId,
@@ -246,16 +276,7 @@ export function createDebtsService({ commands, finance, contacts, financialManag
           mode: d.mode,
           firstDueOn: d.firstDueOn,
           feeMinor,
-          schedule: [
-            ...paid,
-            ...buildSchedule(
-              remaining.principalMinor,
-              remaining.feeMinor + d.additionalFeeMinor,
-              d.terms,
-              d.firstDueOn,
-              d.mode,
-            ),
-          ],
+          schedule: [...paid, ...schedule],
           rescheduleReason: d.reason,
         });
       });

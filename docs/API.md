@@ -130,7 +130,7 @@ Venta: retorna `subtotalMinor`, `discountMinor`, `totalMinor`, `costMinor`, `pro
 | POST `/credit-lines/:id/payments` ★ | `{walletId,amountMinor,description?,revision}`; devuelve línea, importe y pagos aplicados |
 | POST `/debts` ★ | Ejemplo inferior |
 | POST `/debts/:id/payments` ★ | `{walletId,amountMinor,description?,revision}`; devuelve `{debt,payment}` |
-| POST `/debts/:id/reschedule` ★ | `{terms,firstDueOn,mode,additionalFeeMinor?:0,reason,revision}` |
+| POST `/debts/:id/reschedule` ★ | `{terms,firstDueOn,mode,installmentsMinor?,additionalFeeMinor?:0,reason,revision}` |
 
 ```json
 {
@@ -233,3 +233,9 @@ Los intentos vencen en cinco minutos, se consumen una sola vez y almacenan únic
 Una cuenta existente con el mismo correo recibe `409 GOOGLE_LINK_REQUIRED`; debe entrar con su contraseña y vincular Google desde el perfil. La identidad permanente es `sub`, no el correo. Las operaciones están limitadas por IP y generan eventos de seguridad sin credenciales. `GET /auth/me` agrega `googleLinked` y, cuando corresponda, `googleEmail`.
 
 Configura en Google los orígenes `https://nexo.aethel.ing` y, si se usa, `https://nexo-negocios-isaac.mik-chivasrayo-l.chatgpt.site`. Se usa popup con callback JavaScript; este flujo web no requiere un client secret ni URI de redirección. Para una app Android nativa se necesita su propia integración de identidad y configuración de firma; no se ejecuta Google Sign-In dentro de un WebView.
+
+### Reprogramación con importes por mes
+
+`POST /debts/:id/reschedule` admite `mode: "custom"` y `installmentsMinor`, un arreglo de importes en centavos, ordenados por mes a partir de `firstDueOn`. Debe contener exactamente `terms` elementos (1–120); admite meses en cero. La suma debe ser igual al capital pendiente más los cargos pendientes y `additionalFeeMinor`. Se rechazan importes negativos, fraccionarios y planes que no cuadren. Los cargos conocidos se asignan primero y el resto reduce capital. No se calculan intereses automáticamente ni se modifica el efectivo al reprogramar.
+
+Ejemplo: `{ "terms": 3, "firstDueOn": "2027-01-31", "mode": "custom", "installmentsMinor": [20000, 0, 80000], "additionalFeeMinor": 0, "reason": "Pagos según disponibilidad", "revision": 2 }`. Para un saldo pendiente de $1,000.00 conserva los abonos anteriores y programa $200.00, $0.00 y $800.00. `monthly` y `balloon` conservan su contrato sin `installmentsMinor`.
