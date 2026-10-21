@@ -10,6 +10,7 @@
     "NODE_ENV": "production",
     "MONGO_DB": "nexo",
     "MONGO_AUTO_MIGRATE": "true",
+    "GOOGLE_CLIENT_ID": "259045388211-p4fk2jnqhm40t1tqa91da7ic1qbn76ak.apps.googleusercontent.com",
     "JWT_ISSUER": "nexo-api",
     "JWT_AUDIENCE": "nexo-app",
     "ACCESS_TOKEN_MINUTES": "30",

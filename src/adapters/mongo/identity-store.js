@@ -4,6 +4,24 @@ export function createIdentityStore({ db, client }, session) {
   return {
     findUserByEmail: (email) => db.collection('users').findOne({ email }, options),
     findUserById: (_id) => db.collection('users').findOne({ _id }, options),
+    findUserByGoogleSub: (googleSub) => db.collection('users').findOne({ googleSub }, options),
+    setGoogleIdentity: (_id, googleSub, googleEmail) =>
+      db
+        .collection('users')
+        .updateOne(
+          { _id },
+          { $set: { googleSub, googleEmail, googleLinkedAt: new Date() } },
+          options,
+        ),
+    insertGoogleChallenge: (record) => db.collection('authChallenges').insertOne(record, options),
+    findGoogleChallenge: (_id, purpose, userId) =>
+      db
+        .collection('authChallenges')
+        .findOne({ _id, purpose, userId, expiresAt: { $gt: new Date() } }, options),
+    consumeGoogleChallenge: (_id, purpose, userId) =>
+      db
+        .collection('authChallenges')
+        .findOneAndDelete({ _id, purpose, userId, expiresAt: { $gt: new Date() } }, options),
     insertUser: (user) => db.collection('users').insertOne(user, options),
     insertSession: (record) => db.collection('sessions').insertOne(record, options),
     insertSecurityEvent: (record) => db.collection('securityEvents').insertOne(record, options),

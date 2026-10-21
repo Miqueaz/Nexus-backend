@@ -1,5 +1,9 @@
 const levels = ['debug', 'info', 'warn', 'error', 'fatal'];
 const secrets = new Set([
+  'credential',
+  'idtoken',
+  'nonce',
+  'noncehash',
   'password',
   'passwordhash',
   'accesstoken',

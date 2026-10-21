@@ -1,3 +1,4 @@
+import { createGoogleIdentity } from './adapters/identity/google.js';
 import { createIdentityStore } from './adapters/mongo/identity-store.js';
 import { createBusinessDirectory } from './adapters/mongo/business-directory.js';
 import { createIdempotencyStore } from './adapters/mongo/idempotency-store.js';
@@ -22,7 +23,7 @@ import { createFinancialManagementAdapter } from './adapters/modules/financial-m
 import { createInventoryAdapter } from './adapters/modules/inventory.js';
 import { createContactsAdapter } from './adapters/modules/contacts.js';
 import { createSalesAdapter } from './adapters/modules/sales.js';
-export async function createContainer({ client, db, config, logger }) {
+export async function createContainer({ client, db, config, logger, googleIdentity }) {
   const uow = createUnitOfWork(client, db);
   const audit = createAuditAdapter(db);
   const idempotency = createIdempotencyStore(db);
@@ -39,7 +40,12 @@ export async function createContainer({ client, db, config, logger }) {
   const contacts = createContactsAdapter();
   const sales = createSalesService({ commands, inventory, finance, contacts });
   return {
-    auth: await createAuthService({ store: createIdentityStore({ db, client }), config, logger }),
+    auth: await createAuthService({
+      store: createIdentityStore({ db, client }),
+      config,
+      logger,
+      googleIdentity: googleIdentity ?? createGoogleIdentity({ clientId: config.googleClientId }),
+    }),
     businesses: createBusinessService({
       uow,
       directory: createBusinessDirectory(db),

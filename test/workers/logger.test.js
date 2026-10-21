@@ -11,7 +11,7 @@ test('Logger Workers conserva contexto, respeta nivel y redacta secretos anidado
       requestId: 'id',
       headers: { authorization: 'Bearer secret' },
       password: 'secret',
-      nested: { mongoUri: 'secret' },
+      nested: { mongoUri: 'secret', credential: 'secret', nonce: 'secret' },
     },
     'request',
   );

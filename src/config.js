@@ -9,6 +9,10 @@ const envSchema = z.object({
     .regex(/^[a-zA-Z0-9_-]+$/)
     .default('nexo'),
   JWT_SECRET: z.string().min(48),
+  GOOGLE_CLIENT_ID: z
+    .string()
+    .regex(/^(?:[0-9]+-[a-zA-Z0-9_-]+\.apps\.googleusercontent\.com)?$/)
+    .default(''),
   JWT_ISSUER: z.string().default('nexo-api'),
   JWT_AUDIENCE: z.string().default('nexo-app'),
   ACCESS_TOKEN_MINUTES: z.coerce.number().int().min(1).max(1440).default(30),
@@ -26,6 +30,7 @@ export function readConfig(env = process.env) {
     mongoAutoMigrate: c.MONGO_AUTO_MIGRATE === 'true',
     mongoDb: c.MONGO_DB,
     jwtSecret: c.JWT_SECRET,
+    googleClientId: c.GOOGLE_CLIENT_ID,
     jwtIssuer: c.JWT_ISSUER,
     jwtAudience: c.JWT_AUDIENCE,
     tokenMinutes: c.ACCESS_TOKEN_MINUTES,

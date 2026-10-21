@@ -15,6 +15,23 @@ export function createRoutes(s) {
     public: true,
     limited: true,
   });
+  add('post', prefix + '/auth/google/challenge', () => s.auth.googleChallenge(), {
+    public: true,
+    limited: true,
+  });
+  add('post', prefix + '/auth/google', (r) => s.auth.googleLogin(r.body, r.requestId), {
+    public: true,
+    limited: true,
+  });
+  add(
+    'post',
+    prefix + '/auth/google/link/challenge',
+    (r) => s.auth.googleLinkChallenge(r.context, r.body),
+    { limited: true },
+  );
+  add('post', prefix + '/auth/google/link', (r) => s.auth.googleLink(r.context, r.body), {
+    limited: true,
+  });
   add('get', prefix + '/auth/me', (r) => s.auth.me(r.context));
   add('post', prefix + '/auth/logout', (r) => s.auth.logout(r.context));
   add('get', prefix + '/businesses', async (r) => ({ data: await s.businesses.list(r.context) }));

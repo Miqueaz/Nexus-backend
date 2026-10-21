@@ -218,3 +218,18 @@ El origen web de producción permitido en CORS es `https://nexo.aethel.ing`, sin
 `?collections=wallets,movements` limita los recursos a actualizar. Usa los nombres públicos de las rutas, separados por comas y sin repetidos. Cada recurso retorna `{data,nextCursor}` con un máximo de 100 registros. Si existe `nextCursor`, continúa por su ruta habitual con `?limit=100&cursor=...`; no se deben descartar las páginas siguientes. Cada continuación es una consulta independiente.
 
 `?at=ISO_DATETIME` consulta el historial de los recursos seleccionados con el mismo corte y retorna además `readOnly:true`. Sus continuaciones usan `/history?collection=NOMBRE_INTERNO&at=...&limit=100&cursor=...`. No escribe registros ni acepta fechas futuras. Las rutas individuales siguen disponibles.
+
+### Acceso con Google
+
+Configura `GOOGLE_CLIENT_ID` con el cliente OAuth web. La verificación usa las claves públicas oficiales de Google, RS256, audiencia, emisor, vencimiento, correo verificado y nonce. La API emite su propio Bearer Nexo. El cliente no envía ni decide el identificador del usuario.
+
+- `POST /auth/google/challenge` con `{}`: retorna `{challengeId,nonce,clientId,expiresIn:300}`. El nonce se usa en `google.accounts.id.initialize`.
+- `POST /auth/google` con `{credential,challengeId}`: valida el ID token y consume el intento dentro de la transacción que crea la sesión. Retorna el mismo contrato que `/auth/login`.
+- `POST /auth/google/link/challenge` con Bearer y `{password}`: confirma la contraseña de Nexo y crea un intento de vinculación asociado al usuario autenticado.
+- `POST /auth/google/link` con Bearer y `{credential,challengeId}`: vincula la identidad Google a ese usuario y retorna su información pública. No crea otro usuario ni cambia membresías.
+
+Los intentos vencen en cinco minutos, se consumen una sola vez y almacenan únicamente un hash del nonce. No se guardan ID tokens de Google. Los índices únicos de correo y `googleSub` evitan cuentas duplicadas; `authChallenges.expiresAt` tiene TTL. La migración es aditiva y se ejecuta con `npm run db:migrate`, o automáticamente en Workers si `MONGO_AUTO_MIGRATE=true`.
+
+Una cuenta existente con el mismo correo recibe `409 GOOGLE_LINK_REQUIRED`; debe entrar con su contraseña y vincular Google desde el perfil. La identidad permanente es `sub`, no el correo. Las operaciones están limitadas por IP y generan eventos de seguridad sin credenciales. `GET /auth/me` agrega `googleLinked` y, cuando corresponda, `googleEmail`.
+
+Configura en Google los orígenes `https://nexo.aethel.ing` y, si se usa, `https://nexo-negocios-isaac.mik-chivasrayo-l.chatgpt.site`. Se usa popup con callback JavaScript; este flujo web no requiere un client secret ni URI de redirección. Para una app Android nativa se necesita su propia integración de identidad y configuración de firma; no se ejecuta Google Sign-In dentro de un WebView.

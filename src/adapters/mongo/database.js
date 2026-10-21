@@ -68,6 +68,7 @@ export async function ensureIndexes(db) {
     'users',
     'sessions',
     'securityEvents',
+    'authChallenges',
   ]) {
     if (!(await db.listCollections({ name }, { nameOnly: true }).hasNext()))
       try {
@@ -79,6 +80,13 @@ export async function ensureIndexes(db) {
   for (const name of collections)
     await db.collection(name).createIndex({ businessId: 1, createdAt: -1, _id: -1 });
   await db.collection('users').createIndex({ email: 1 }, { unique: true });
+  await db
+    .collection('users')
+    .createIndex(
+      { googleSub: 1 },
+      { unique: true, partialFilterExpression: { googleSub: { $type: 'string' } } },
+    );
+  await db.collection('authChallenges').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
   await db.collection('sessions').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
   await db.collection('memberships').createIndex({ businessId: 1, userId: 1 }, { unique: true });
   await db.collection('memberships').createIndex({ userId: 1 });
@@ -105,6 +113,7 @@ export async function ensureIndexes(db) {
 export async function assertDatabasePrepared(db) {
   const required = [
     ['users', { email: 1 }],
+    ['users', { googleSub: 1 }],
     ['memberships', { businessId: 1, userId: 1 }],
     ['idempotency', { businessId: 1, key: 1 }],
     ['items', { businessId: 1, sku: 1 }],
@@ -115,7 +124,13 @@ export async function assertDatabasePrepared(db) {
       const indexes = await db.collection(name).listIndexes().toArray();
       const index = indexes.find((i) => i.unique && JSON.stringify(i.key) === JSON.stringify(key));
       if (!index) throw new Error('Missing unique index');
-      const partialField = name === 'items' ? 'sku' : name === 'sales' ? 'quoteId' : null;
+      const partialField = key.googleSub
+        ? 'googleSub'
+        : name === 'items'
+          ? 'sku'
+          : name === 'sales'
+            ? 'quoteId'
+            : null;
       if (partialField && index.partialFilterExpression?.[partialField]?.$type !== 'string')
         throw new Error('Incorrect partial index');
     }

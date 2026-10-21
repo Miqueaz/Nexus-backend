@@ -5,6 +5,13 @@ export function createLogger(level = 'info') {
     base: { service: 'nexo-api' },
     redact: {
       paths: [
+        'credential',
+        'idToken',
+        'nonce',
+        'nonceHash',
+        '*.credential',
+        '*.idToken',
+        '*.nonce',
         'password',
         'passwordHash',
         'accessToken',

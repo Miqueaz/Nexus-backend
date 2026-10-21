@@ -543,3 +543,55 @@ test('Workerd sirve snapshot agrupado con Bearer y conserva el aislamiento del n
     422,
   );
 });
+
+test('Workerd configura Google, guarda intentos con vencimiento y rechaza credenciales inválidas', async () => {
+  const attempt = await call(
+    'POST',
+    '/api/v1/auth/google/challenge',
+    {},
+    undefined,
+    undefined,
+    '192.0.2.91',
+  );
+  assert.equal(attempt.status, 200, JSON.stringify(attempt.data));
+  assert.equal(
+    attempt.data.clientId,
+    '259045388211-p4fk2jnqhm40t1tqa91da7ic1qbn76ak.apps.googleusercontent.com',
+  );
+  const stored = await db.collection('authChallenges').findOne({ _id: attempt.data.challengeId });
+  assert.ok(stored.nonceHash);
+  assert.equal(stored.nonce, undefined);
+  assert.ok(stored.expiresAt > new Date());
+  const invalid = await call(
+    'POST',
+    '/api/v1/auth/google',
+    { challengeId: attempt.data.challengeId, credential: 'not-a-jwt' },
+    undefined,
+    undefined,
+    '192.0.2.91',
+  );
+  assert.equal(invalid.status, 401, JSON.stringify(invalid.data));
+  assert.equal(invalid.data.error.code, 'INVALID_GOOGLE_TOKEN');
+  assert.equal(
+    (
+      await call(
+        'POST',
+        '/api/v1/auth/google/link/challenge',
+        { password: 'UnaClaveLarga123!' },
+        undefined,
+        undefined,
+        '192.0.2.91',
+      )
+    ).status,
+    401,
+  );
+  const indexes = await db.collection('users').listIndexes().toArray();
+  assert.ok(
+    indexes.some(
+      (index) =>
+        index.key.googleSub === 1 &&
+        index.unique &&
+        index.partialFilterExpression.googleSub.$type === 'string',
+    ),
+  );
+});
