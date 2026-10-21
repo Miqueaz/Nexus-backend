@@ -5,6 +5,7 @@ import { createUnitOfWork } from './adapters/mongo/unit-of-work.js';
 import { createAuditAdapter } from './adapters/mongo/audit.js';
 import { createQueries } from './adapters/mongo/queries.js';
 import { createCommands } from './core/commands.js';
+import { createModuleAccessAdapter } from './adapters/modules/module-access.js';
 import { createAuthService } from './modules/auth/service.js';
 import { createBusinessService } from './modules/businesses/service.js';
 import { createFinanceService } from './modules/finance/service.js';
@@ -24,7 +25,14 @@ import { createSalesAdapter } from './adapters/modules/sales.js';
 export async function createContainer({ client, db, config, logger }) {
   const uow = createUnitOfWork(client, db);
   const audit = createAuditAdapter(db);
-  const commands = createCommands({ uow, idempotency: createIdempotencyStore(db), audit, logger });
+  const idempotency = createIdempotencyStore(db);
+  const commands = createCommands({
+    uow,
+    idempotency,
+    audit,
+    logger,
+    moduleAccess: createModuleAccessAdapter(),
+  });
   const finance = createFinanceAdapter();
   const financialManagement = createFinancialManagementAdapter();
   const inventory = createInventoryAdapter();
@@ -37,6 +45,7 @@ export async function createContainer({ client, db, config, logger }) {
       directory: createBusinessDirectory(db),
       audit,
       commands,
+      idempotency,
     }),
     finance: createFinanceService({ commands, finance, financialManagement }),
     inventory: createInventoryService({ commands }),

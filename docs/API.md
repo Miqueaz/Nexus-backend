@@ -1,6 +1,6 @@
 # API v1
 
-Base: `http://localhost:3000/api/v1`. JSON. Los ejemplos usan IDs UUID de las respuestas `_id`.
+Base de producción: `https://api.nexo.aethel.ing/api/v1`. Desarrollo: `http://localhost:3000/api/v1`. JSON. Los ejemplos usan IDs UUID de las respuestas `_id`.
 
 ## Autenticación
 
@@ -16,7 +16,7 @@ Contraseña de 12 a 128 caracteres. El token vence por defecto en 30 minutos. La
 | Método y ruta | Entrada |
 |---|---|
 | GET `/businesses` | Lista de negocios con rol |
-| POST `/businesses` | `{name,currency:"MXN",timezone:"America/Mexico_City"}`; timezone opcional |
+| POST `/businesses` | `{name,currency:"MXN",timezone?,kind?,description?,color?,enabledModules?}` |
 
 ## Negocio
 
@@ -26,7 +26,8 @@ En las tablas siguientes, todas las rutas tienen el prefijo **`/businesses/:busi
 
 | Método y ruta | Entrada / descripción |
 |---|---|
-| PATCH `/` | `{name,revision}`; propietario |
+| GET `/` | Identidad, revisión, configuración y rol actual del usuario |
+| PATCH `/` | `{name?,kind?,description?,color?,enabledModules?,revision}`; solo propietario |
 | GET `/members` | Lista de membresías |
 | POST `/members` | `{email,role:"editor"\|"viewer"}`; usuario ya registrado |
 | PATCH `/members/:id` | `{role:"editor"\|"viewer"\|"removed",revision}`; el owner está protegido |
@@ -190,3 +191,12 @@ Tarea: `{id:"UUID",title:"Comprar insumos",done:false}`. Calendario: rango máxi
 Tanto editar como eliminar requieren saldo cero. En cuentas se comprueba `balanceMinor === 0` (también se bloquean saldos negativos) y que no queden créditos recibidos en esa cuenta con capital o cargos pendientes. En líneas se comprueba cada deuda vinculada, incluidos cargos pendientes; el cupo disponible no es efectivo y no impide eliminar.
 
 La eliminación es lógica: `PATCH /wallets/:id` o `/credit-lines/:id` con `{archived:true,revision}` e `Idempotency-Key`. No borra movimientos, pagos ni auditoría. La interfaz oculta las eliminadas de las tarjetas y selectores; siguen disponibles para referencias e historial. Los rechazos son `409 WALLET_HAS_BALANCE`, `WALLET_HAS_DEBT` o `CREDIT_LINE_HAS_DEBT`. Permisos, revisiones y auditoría se conservan. La comprobación y escritura se ejecutan en la misma transacción; los movimientos y las disposiciones concurrentes actualizan el mismo agregado y no pueden dejar una cuenta eliminada con saldo ni una línea eliminada con deuda.
+
+
+## Espacios y módulos
+
+`kind`: `business` (predeterminado) o `workspace`. `color`: hexadecimal `#RRGGBB`, predeterminado `#164e3d`. `description`: hasta 4000 caracteres. `enabledModules`: lista única de IDs del catálogo autenticado `GET /api/v1/business-modules`: `finance`, `inventory`, `sales`, `quotes`, `projections`, `contacts`, `calendar`, `projects`, `history`. Al crear se activan todos si se omite la lista; `[]` activa ninguno. Los negocios antiguos conservan todos los módulos sin migración. El resumen y la administración siempre están disponibles.
+
+Ventas requiere Finanzas e Inventario; una combinación inconsistente devuelve 422. Las cotizaciones independientes siguen disponibles; convertir requiere también Ventas. Desactivar un módulo impide sus escrituras con `409 MODULE_DISABLED`, incluyendo servicios compuestos y cálculo de proyecciones. Las lecturas autorizadas siguen disponibles para referencias y consultas históricas, y no se eliminan datos. Los roles conservan sus límites habituales; desactivar módulos no sustituye el control de acceso.
+
+Las ediciones solo admiten identidad y selección de módulos; moneda y zona horaria permanecen constantes. Un PATCH parcial conserva valores omitidos. Se exige `revision`, se rechazan cambios obsoletos con 409, y cada edición queda en auditoría. Editores/lectores reciben 403; usuarios sin membresía reciben 404. Crear un espacio añade al usuario autenticado como su propietario. `Idempotency-Key` es opcional para crear negocios y permite reintentar incluso solicitudes concurrentes sin crear espacios o membresías duplicados; reutilizar la clave con otro cuerpo produce 409.

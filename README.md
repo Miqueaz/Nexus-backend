@@ -135,3 +135,6 @@ Las pruebas cubren autenticación/revocación, aislamiento y roles, descuentos, 
 Documentación técnica consultada: [transacciones del driver oficial MongoDB](https://www.mongodb.com/docs/drivers/node/current/crud/transactions/), [Express 5](https://expressjs.com/en/api/) y [jose jwtVerify](https://github.com/panva/jose/blob/main/docs/jwt/verify/functions/jwtVerify.md).
 
 Las cuentas y líneas admiten edición y eliminación lógica solo sin saldo ni obligaciones pendientes. Puedes editar el nombre/tipo de una cuenta o el nombre/cupo/datos de una línea. El historial se conserva; consulta las reglas en [API](docs/API.md#edición-y-eliminación-de-cuentas-y-líneas).
+
+
+El módulo de negocios permite crear negocios o espacios de trabajo con descripción, color y selección de módulos. Solo su propietario puede editar estos datos. Las herramientas desactivadas conservan registros y bloquean nuevas escrituras mediante el adaptador de acceso a módulos; `GET /business-modules` ofrece el catálogo. Dominio de producción: `https://api.nexo.aethel.ing/api/v1`.

@@ -24,8 +24,8 @@ const pageSchema = z.strictObject({
   archived: z.enum(['true', 'false']).optional(),
 });
 export function createQueries({ db, commands }) {
-  async function authorized(ctx, fn) {
-    return commands.read(ctx, fn);
+  async function authorized(ctx, fn, options) {
+    return commands.read(ctx, fn, options);
   }
   return {
     authorize: authorized,

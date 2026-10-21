@@ -110,3 +110,6 @@ La suite Workers usa el test harness oficial de Wrangler sobre `workerd` y un re
 - Las consultas de historial y calendarios que lean muchos datos deben evaluarse con volumen real. Las pruebas funcionales no sustituyen pruebas de carga, latencia de Atlas ni facturación.
 
 Referencias oficiales: [MongoDB en Workers](https://developers.cloudflare.com/workers/databases/third-party-integrations/mongodb/), [límites de Durable Objects](https://developers.cloudflare.com/durable-objects/platform/limits/), [configuración de límites de Wrangler](https://developers.cloudflare.com/workers/wrangler/configuration/#limits), [Node crypto](https://developers.cloudflare.com/workers/runtime-apis/nodejs/crypto/), [Wrangler test harness](https://developers.cloudflare.com/workers/wrangler/api/).
+
+
+El dominio de producción `api.nexo.aethel.ing` está declarado en `routes` como `custom_domain: true`; Wrangler lo enlaza al mismo Worker al desplegar en la cuenta que administra la zona `aethel.ing`. `workers_dev` sigue habilitado para conservar el alias existente. Los clientes usan `https://api.nexo.aethel.ing`; CORS debe contener el origen de la web, no la URL de la API. Los secretos y la base MongoDB no cambian por este cambio de dominio.

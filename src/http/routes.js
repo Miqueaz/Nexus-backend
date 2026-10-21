@@ -1,3 +1,4 @@
+import { moduleCatalog } from '../modules/businesses/settings.js';
 /** Catálogo HTTP compartido: servicios de negocio independientes del servidor. */
 export function createRoutes(s) {
   const routes = [];
@@ -17,6 +18,7 @@ export function createRoutes(s) {
   add('get', prefix + '/auth/me', (r) => s.auth.me(r.context));
   add('post', prefix + '/auth/logout', (r) => s.auth.logout(r.context));
   add('get', prefix + '/businesses', async (r) => ({ data: await s.businesses.list(r.context) }));
+  add('get', prefix + '/business-modules', () => ({ data: moduleCatalog }));
   add('post', prefix + '/businesses', (r) => s.businesses.create(r.context, r.body), {
     status: 201,
   });
@@ -26,6 +28,7 @@ export function createRoutes(s) {
     add(method, base + (path === '/' ? '' : path), handler, { business: true, ...options });
   const create = { status: 201 };
   const financial = { status: 201, idempotent: true };
+  read('/', (r) => s.businesses.get(r.context));
   write('patch', '/', (r) => s.businesses.update(r.context, r.body));
   read('/members', (r) => s.businesses.members(r.context));
   write('post', '/members', (r) => s.businesses.addMember(r.context, r.body), create);
@@ -70,7 +73,9 @@ export function createRoutes(s) {
   }
   // Calcular también requiere pertenecer al negocio aunque no escriba datos.
   write('post', '/projections/calculate', (r) =>
-    s.queries.authorize(r.context, () => s.projections.calculate(r.body)),
+    s.queries.authorize(r.context, () => s.projections.calculate(r.body), {
+      module: 'projections',
+    }),
   );
   write('post', '/projections', (r) => s.projections.save(r.context, r.body), create);
   write('post', '/credit-lines', (r) => s.debts.createLine(r.context, r.body), create);

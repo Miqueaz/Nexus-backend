@@ -10,7 +10,7 @@ function stable(value) {
     );
   return value;
 }
-export function createCommands({ uow, idempotency, audit, logger }) {
+export function createCommands({ uow, idempotency, audit, logger, moduleAccess }) {
   async function membership(tx, ctx, write = false, owner = false) {
     const member = (await tx.find('memberships', { userId: ctx.userId }))[0];
     ensure(member && member.role !== 'removed', 404, 'NOT_FOUND', 'Negocio no encontrado');
@@ -49,6 +49,7 @@ export function createCommands({ uow, idempotency, audit, logger }) {
             return stored.response;
           }
         }
+        await moduleAccess.assertAction(tx, action);
         const response = await operation(tx);
         await audit.append(tx, ctx, action);
         if (ctx.key)
@@ -69,9 +70,10 @@ export function createCommands({ uow, idempotency, audit, logger }) {
       );
       return result;
     },
-    async read(ctx, operation) {
+    async read(ctx, operation, { module } = {}) {
       return uow.run(ctx.businessId, async (tx) => {
         await membership(tx, ctx);
+        if (module) await moduleAccess.assertEnabled(tx, module);
         return operation(tx);
       });
     },

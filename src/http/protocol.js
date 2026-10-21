@@ -2,7 +2,7 @@ import { ZodError } from 'zod';
 import { id } from '../core/validation.js';
 import { AppError, ensure } from '../core/errors.js';
 export async function authorizeRoute(route, req, services) {
-  const context = { requestId: req.requestId };
+  const context = { requestId: req.requestId, key: req.headers['idempotency-key'] };
   if (!route.public)
     Object.assign(context, await services.auth.authenticate(req.headers.authorization));
   if (route.business) {

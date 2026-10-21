@@ -362,3 +362,60 @@ test('Workerd protege edición y eliminación con saldo/deuda y conserva el borr
   assert.equal(r.status, 200, JSON.stringify(r.data));
   assert.equal(r.data.archived, true);
 });
+
+test('Workerd actualiza identidad/módulos solo por propietario y protege los módulos desactivados', async () => {
+  const f = await fixture();
+  let r = await call('GET', f.base, undefined, f.token);
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.role, 'owner');
+  r = await call(
+    'PATCH',
+    f.base,
+    {
+      name: 'Estudio',
+      kind: 'workspace',
+      color: '#336699',
+      enabledModules: ['projects'],
+      revision: r.data.revision,
+    },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.color, '#336699');
+  const disabled = await call(
+    'POST',
+    f.base + '/wallets',
+    { name: 'No crear' },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(disabled.status, 409, JSON.stringify(disabled.data));
+  assert.equal(disabled.data.error.code, 'MODULE_DISABLED');
+  const project = await call(
+    'POST',
+    f.base + '/projects',
+    { name: 'Permitido' },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(project.status, 201, JSON.stringify(project.data));
+  const meta = await call('GET', f.base, undefined, f.token);
+  assert.deepEqual(meta.data.enabledModules, ['projects']);
+  r = await call(
+    'PATCH',
+    f.base,
+    { enabledModules: ['finance', 'projects'], revision: meta.data.revision },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const wallet = await call(
+    'POST',
+    f.base + '/wallets',
+    { name: 'Reactivada' },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(wallet.status, 201, JSON.stringify(wallet.data));
+});

@@ -800,3 +800,174 @@ test('Eliminar concurrentemente con ingreso o compra no deja saldos o deudas en 
   );
   assert.ok(balance.archived ? balance.usedMinor === 0 : balance.usedMinor === 100);
 });
+
+test('Espacios guardan identidad y módulos; solo el propietario puede administrarlos', async () => {
+  const f = await fixture();
+  const original = (await call(f, 'get', '').expect(200)).body;
+  assert.equal(original.role, 'owner');
+  assert.equal(original.color, '#164e3d');
+  assert.equal(original.enabledModules.length, 9);
+  const editor = await user(),
+    viewer = await user(),
+    other = await fixture();
+  await call(f, 'post', '/members', { email: editor.email, role: 'editor' }).expect(201);
+  await call(f, 'post', '/members', { email: viewer.email, role: 'viewer' }).expect(201);
+  for (const u of [editor, viewer])
+    await call({ ...f, token: u.token }, 'patch', '', {
+      name: 'Ajeno',
+      color: '#aabbcc',
+      enabledModules: [],
+      revision: 1,
+    }).expect(403);
+  await call({ ...f, token: other.token }, 'patch', '', { name: 'Ajeno', revision: 1 }).expect(404);
+  const updated = (
+    await call(f, 'patch', '', {
+      name: 'Estudio',
+      kind: 'workspace',
+      description: 'Diseño y proyectos',
+      color: '#AABBCC',
+      enabledModules: ['projects', 'contacts'],
+      revision: 1,
+    }).expect(200)
+  ).body;
+  assert.equal(updated.color, '#aabbcc');
+  assert.equal(updated.kind, 'workspace');
+  assert.deepEqual(updated.enabledModules, ['projects', 'contacts']);
+  const partial = (
+    await call(f, 'patch', '', { name: 'Estudio nuevo', revision: updated.revision }).expect(200)
+  ).body;
+  assert.equal(partial.description, 'Diseño y proyectos');
+  assert.deepEqual(partial.enabledModules, updated.enabledModules);
+  await call(f, 'patch', '', { name: 'Obsoleto', revision: 1 }).expect(409);
+  const listed = (
+    await request(app).get('/api/v1/businesses').auth(f.token, { type: 'bearer' }).expect(200)
+  ).body.data;
+  assert.equal(listed.find((b) => b._id === f.business._id).name, 'Estudio nuevo');
+  assert.equal((await call(other, 'get', '').expect(200)).body.color, '#164e3d');
+  const audit = await db
+    .collection('audit')
+    .find({ businessId: f.business._id, action: 'business.updated' })
+    .toArray();
+  assert.equal(audit.length, 2);
+  assert.equal(audit[0].before.name, 'Negocio');
+  assert.equal(audit[0].after.color, '#aabbcc');
+});
+
+test('Módulos desactivados bloquean escrituras y cálculo, conservan registros y se pueden reactivar', async () => {
+  const f = await fixture(),
+    w = await wallet(f, 1000);
+  const projectBody = { name: 'Proyecto anterior', tasks: [] };
+  await call(f, 'post', '/projects', projectBody).expect(201);
+  const config = (await call(f, 'get', '').expect(200)).body;
+  const disabled = (
+    await call(f, 'patch', '', { enabledModules: [], revision: config.revision }).expect(200)
+  ).body;
+  const attempts = [
+    ['post', '/wallets', { name: 'Bloqueada' }],
+    ['patch', `/wallets/${w._id}`, { name: 'Cambio', revision: w.revision }],
+    ['post', '/inventory-lists', { name: 'Inventario' }],
+    ['post', '/contact-lists', { name: 'Contactos' }],
+    ['post', '/projects', { name: 'Otro' }],
+    ['post', '/events', { title: 'Evento', date: '2027-01-01' }],
+    ['post', '/credit-lines', { name: 'Línea', limitMinor: 100 }],
+    [
+      'post',
+      '/movements',
+      { walletId: w._id, kind: 'income', amountMinor: 100, category: 'Ingreso' },
+    ],
+    ['post', '/projections/calculate', {}],
+  ];
+  for (const [method, path, body] of attempts) {
+    const result = await call(f, method, path, body).expect(409);
+    assert.equal(result.body.error.code, 'MODULE_DISABLED', path);
+  }
+  assert.equal((await call(f, 'get', '/projects').expect(200)).body.data.length, 1);
+  assert.equal((await call(f, 'get', `/wallets/${w._id}`).expect(200)).body.balanceMinor, 1000);
+  await call(
+    f,
+    'get',
+    '/history?collection=wallets&at=' + encodeURIComponent(new Date().toISOString()),
+  ).expect(200);
+  await call(f, 'patch', '', { enabledModules: ['projects'], revision: disabled.revision }).expect(
+    200,
+  );
+  await call(f, 'post', '/projects', { name: 'Reactivado' }).expect(201);
+  assert.equal((await call(f, 'get', '/projects').expect(200)).body.data.length, 2);
+});
+
+test('Identidad y dependencias se validan, y negocios antiguos conservan todos los módulos', async () => {
+  const f = await fixture();
+  for (const patch of [
+    { color: 'red' },
+    { color: '#fff' },
+    { color: '#ffffff;display:none' },
+    { enabledModules: ['unknown'] },
+    { enabledModules: ['finance', 'finance'] },
+    { enabledModules: ['sales'] },
+    { enabledModules: ['sales', 'finance'] },
+    { kind: 'other' },
+    { currency: 'USD' },
+    {},
+  ])
+    await call(f, 'patch', '', { ...patch, revision: 1 }).expect(422);
+  const newBusiness = await request(app)
+    .post('/api/v1/businesses')
+    .auth(f.token, { type: 'bearer' })
+    .send({
+      name: 'Espacio nuevo',
+      kind: 'workspace',
+      currency: 'MXN',
+      color: '#336699',
+      enabledModules: [],
+    })
+    .expect(201);
+  assert.equal(newBusiness.body.kind, 'workspace');
+  assert.deepEqual(newBusiness.body.enabledModules, []);
+  await db
+    .collection('businesses')
+    .updateOne(
+      { _id: f.business._id },
+      { $unset: { color: '', enabledModules: '', kind: '', description: '' } },
+    );
+  assert.equal((await call(f, 'get', '').expect(200)).body.enabledModules.length, 9);
+  await call(f, 'post', '/projects', { name: 'Compatible' }).expect(201);
+  const catalog = (
+    await request(app).get('/api/v1/business-modules').auth(f.token, { type: 'bearer' }).expect(200)
+  ).body.data;
+  assert.equal(catalog.length, 9);
+  assert.deepEqual(catalog.find((m) => m.id === 'sales').requires, ['finance', 'inventory']);
+  await request(app).get('/api/v1/business-modules').expect(401);
+});
+
+test('Crear espacio con la misma clave, incluso concurrentemente, conserva un solo negocio y propietario', async () => {
+  const u = await user(),
+    key = randomUUID(),
+    body = { name: 'Sin duplicados', currency: 'MXN', color: '#123456', enabledModules: [] };
+  const create = (data = body) =>
+    request(app)
+      .post('/api/v1/businesses')
+      .auth(u.token, { type: 'bearer' })
+      .set('Idempotency-Key', key)
+      .send(data);
+  const results = await Promise.all([create().expect(201), create().expect(201)]);
+  assert.equal(results[0].body._id, results[1].body._id);
+  await create({ ...body, name: 'Otro' }).expect(409);
+  const list = (
+    await request(app).get('/api/v1/businesses').auth(u.token, { type: 'bearer' }).expect(200)
+  ).body.data;
+  assert.equal(list.length, 1);
+  assert.equal(
+    await db
+      .collection('memberships')
+      .countDocuments({ businessId: list[0]._id, userId: u.id, role: 'owner' }),
+    1,
+  );
+  assert.equal(
+    await db.collection('audit').countDocuments({
+      businessId: list[0]._id,
+      action: 'business.created',
+      collection: 'businesses',
+    }),
+    1,
+  );
+});
