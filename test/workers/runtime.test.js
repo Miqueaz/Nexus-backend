@@ -522,3 +522,24 @@ test('Workerd registra compras y abono a una línea sin crear efectivo ni duplic
   assert.equal(balances.data[0].usedMinor, 200);
   assert.equal(await db.collection('debtPayments').countDocuments({ businessId: f.businessId }), 1);
 });
+
+test('Workerd sirve snapshot agrupado con Bearer y conserva el aislamiento del negocio', async () => {
+  const f = await fixture();
+  const r = await call(
+    'GET',
+    f.base + '/snapshot?collections=wallets,credit-lines,debts',
+    undefined,
+    f.token,
+  );
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.business._id, f.businessId);
+  assert.equal(r.data.business.role, 'owner');
+  assert.deepEqual(Object.keys(r.data.collections), ['wallets', 'credit-lines', 'debts']);
+  assert.equal((await call('GET', f.base + '/snapshot')).status, 401);
+  const other = await fixture();
+  assert.equal((await call('GET', f.base + '/snapshot', undefined, other.token)).status, 404);
+  assert.equal(
+    (await call('GET', f.base + '/snapshot?collections=sessions', undefined, f.token)).status,
+    422,
+  );
+});

@@ -1073,3 +1073,68 @@ test('Abono a línea se reparte por vencimiento, libera cupo y revierte completo
   }).expect(422);
   assert.equal(archived.body.error.code, 'CREDIT_LINE_ARCHIVED');
 });
+
+test('Snapshot agrupa lecturas con aislamiento, historial y paginación sin truncar registros', async () => {
+  const f = await fixture();
+  const w = await wallet(f, 10000);
+  const at = new Date().toISOString();
+  await call(f, 'post', '/movements', {
+    walletId: w._id,
+    kind: 'income',
+    amountMinor: 100,
+    category: 'Prueba',
+  }).expect(201);
+  const current = (await call(f, 'get', '/snapshot').expect(200)).body;
+  assert.equal(current.business._id, f.business._id);
+  assert.equal(current.business.role, 'owner');
+  assert.equal(Object.keys(current.collections).length, 15);
+  assert.equal(current.collections.wallets.data[0].balanceMinor, 10100);
+  assert.deepEqual(
+    current.collections.movements,
+    (await call(f, 'get', '/movements?limit=100').expect(200)).body,
+  );
+  const historical = (
+    await call(
+      f,
+      'get',
+      '/snapshot?collections=wallets,credit-lines&at=' + encodeURIComponent(at),
+    ).expect(200)
+  ).body;
+  assert.equal(historical.readOnly, true);
+  assert.equal(historical.collections.wallets.data[0].balanceMinor, 10000);
+  assert.deepEqual(Object.keys(historical.collections), ['wallets', 'credit-lines']);
+  assert.equal((await call(f, 'get', '/wallets/' + w._id).expect(200)).body.balanceMinor, 10100);
+  for (const query of ['users', 'audit', 'wallets,wallets', '', 'wallets,unknown'])
+    await call(f, 'get', '/snapshot?collections=' + query).expect(422);
+  await call(
+    f,
+    'get',
+    '/snapshot?at=' + encodeURIComponent(new Date(Date.now() + 60000).toISOString()),
+  ).expect(422);
+  const stranger = await user();
+  await request(app)
+    .get(f.base + '/snapshot')
+    .auth(stranger.token, { type: 'bearer' })
+    .expect(404);
+  await request(app)
+    .get(f.base + '/snapshot')
+    .expect(401);
+  const now = new Date();
+  await db.collection('wallets').insertMany(
+    Array.from({ length: 102 }, (_, i) => ({
+      ...w,
+      _id: randomUUID(),
+      name: 'Paginada ' + i,
+      createdAt: now,
+      balanceMinor: 0,
+    })),
+  );
+  const first = (await call(f, 'get', '/snapshot?collections=wallets').expect(200)).body.collections
+    .wallets;
+  assert.equal(first.data.length, 100);
+  assert.ok(first.nextCursor);
+  const rest = (await call(f, 'get', '/wallets?limit=100&cursor=' + first.nextCursor).expect(200))
+    .body;
+  assert.equal(new Set([...first.data, ...rest.data].map((row) => row._id)).size, 103);
+  assert.equal(rest.nextCursor, null);
+});

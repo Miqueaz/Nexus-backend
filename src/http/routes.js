@@ -103,6 +103,7 @@ export function createRoutes(s) {
   read('/calendar', (r) => s.planning.calendar(r.context, r.query));
   read('/history', (r) => s.queries.history(r.context, r.query));
   read('/audit', (r) => s.queries.audit(r.context, r.query));
+  read('/snapshot', (r) => s.queries.snapshot(r.context, r.query));
   read('/summary', (r) => s.queries.summary(r.context, r.query));
   const aliases = {
     'inventory-lists': 'inventoryLists',

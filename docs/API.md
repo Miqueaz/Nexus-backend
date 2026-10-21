@@ -210,3 +210,11 @@ Una compra usa `POST /debts` con `kind:"deferred"`, `creditLineId`, capital, un 
 Un abono desde Movimientos usa `POST /credit-lines/:id/payments`, indicando la cuenta de origen y la revisión actual de la línea. Reparte el importe entre compromisos activos por su próximo vencimiento; desempata por fecha de creación e ID. Dentro de cada compromiso conserva la asignación habitual de cargos y capital. Descuenta efectivo, crea los pagos auditados y libera cupo. Todo se ejecuta en una sola transacción: saldo insuficiente, revisión obsoleta o sobrepago revierte la operación completa. Es idempotente, exige rol de escritura y Finanzas activo, respeta aislamiento por negocio y no admite líneas archivadas ni abonos mayores a la deuda.
 
 El origen web de producción permitido en CORS es `https://nexo.aethel.ing`, sin barra final. Se conserva el origen del Site y los de desarrollo; no se permite `*`. Los cambios del mínimo reportado o pago para no generar intereses siguen siendo manuales.
+
+### Lectura agrupada para clientes
+
+`GET /businesses/:businessId/snapshot` retorna `{business,collections}` con los metadatos actuales, el rol del miembro y la primera página de los 15 recursos. Requiere Bearer y pertenencia activa al negocio. La autorización y las lecturas comparten una transacción de consulta.
+
+`?collections=wallets,movements` limita los recursos a actualizar. Usa los nombres públicos de las rutas, separados por comas y sin repetidos. Cada recurso retorna `{data,nextCursor}` con un máximo de 100 registros. Si existe `nextCursor`, continúa por su ruta habitual con `?limit=100&cursor=...`; no se deben descartar las páginas siguientes. Cada continuación es una consulta independiente.
+
+`?at=ISO_DATETIME` consulta el historial de los recursos seleccionados con el mismo corte y retorna además `readOnly:true`. Sus continuaciones usan `/history?collection=NOMBRE_INTERNO&at=...&limit=100&cursor=...`. No escribe registros ni acepta fechas futuras. Las rutas individuales siguen disponibles.

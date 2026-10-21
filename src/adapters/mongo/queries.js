@@ -1,5 +1,6 @@
 import { z, id } from '../../core/validation.js';
 import { ensure, missing } from '../../core/errors.js';
+import { businessSettings } from '../../modules/businesses/settings.js';
 const readable = new Set([
   'wallets',
   'movements',
@@ -17,6 +18,32 @@ const readable = new Set([
   'debts',
   'debtPayments',
 ]);
+const snapshotCollections = Object.fromEntries(
+  [...readable].map((name) => [
+    {
+      inventoryLists: 'inventory-lists',
+      stockMovements: 'stock-movements',
+      contactLists: 'contact-lists',
+      creditLines: 'credit-lines',
+      debtPayments: 'debt-payments',
+    }[name] || name,
+    name,
+  ]),
+);
+const snapshotSchema = z.strictObject({
+  collections: z
+    .string()
+    .default(Object.keys(snapshotCollections).join(','))
+    .transform((value) => value.split(','))
+    .pipe(
+      z
+        .array(z.enum(Object.keys(snapshotCollections)))
+        .min(1)
+        .max(readable.size),
+    )
+    .refine((names) => new Set(names).size === names.length, 'Recursos repetidos'),
+  at: z.iso.datetime({ offset: true }).optional(),
+});
 const pageSchema = z.strictObject({
   limit: z.coerce.number().int().min(1).max(100).default(30),
   cursor: id.optional(),
@@ -27,34 +54,179 @@ export function createQueries({ db, commands }) {
   async function authorized(ctx, fn, options) {
     return commands.read(ctx, fn, options);
   }
+  async function listPage(tx, ctx, collection, p) {
+    const filter = { businessId: ctx.businessId };
+    if (p.archived !== undefined) filter.archived = p.archived === 'true';
+    if (p.listId) filter.listIds = p.listId;
+    if (p.cursor) {
+      const c = await tx.get(collection, p.cursor);
+      filter.$or = [
+        { createdAt: { $lt: c.createdAt } },
+        { createdAt: c.createdAt, _id: { $lt: c._id } },
+      ];
+    }
+    const rows = await db
+      .collection(collection)
+      .find(filter, { session: tx.session })
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(p.limit + 1)
+      .toArray();
+    return {
+      data: rows.slice(0, p.limit),
+      nextCursor: rows.length > p.limit ? rows[p.limit - 1]._id : null,
+    };
+  }
+  async function historyPage(tx, ctx, d) {
+    const at = new Date(d.at);
+    const match = {
+      businessId: ctx.businessId,
+      collection: d.collection,
+      recordedAt: { $lte: at },
+    };
+    const rows = await db
+      .collection('audit')
+      .aggregate(
+        [
+          { $match: match },
+          { $sort: { entityId: 1, 'after.revision': -1, order: -1 } },
+          { $group: { _id: '$entityId', snapshot: { $first: '$after' } } },
+          ...(d.cursor ? [{ $match: { _id: { $gt: d.cursor } } }] : []),
+          { $sort: { _id: 1 } },
+          { $limit: d.limit + 1 },
+          { $replaceRoot: { newRoot: '$snapshot' } },
+        ],
+        { session: tx.session },
+      )
+      .toArray();
+    return {
+      at: d.at,
+      readOnly: true,
+      basis: 'recordedAt',
+      data: rows.slice(0, d.limit),
+      nextCursor: rows.length > d.limit ? rows[d.limit - 1]._id : null,
+    };
+  }
   return {
     authorize: authorized,
     list(ctx, collection, query) {
       ensure(readable.has(collection), 404, 'NOT_FOUND', 'Recurso no encontrado');
       const p = pageSchema.parse(query);
       return authorized(ctx, async (tx) => {
-        const filter = { businessId: ctx.businessId };
-        if (p.archived !== undefined) filter.archived = p.archived === 'true';
-        if (p.listId) filter.listIds = p.listId;
-        if (p.cursor) {
-          const c = await tx.get(collection, p.cursor);
-          filter.$or = [
-            { createdAt: { $lt: c.createdAt } },
-            { createdAt: c.createdAt, _id: { $lt: c._id } },
-          ];
-        }
-        const rows = await db
-          .collection(collection)
-          .find(filter, { session: tx.session })
-          .sort({ createdAt: -1, _id: -1 })
-          .limit(p.limit + 1)
-          .toArray();
-        return {
-          data: rows.slice(0, p.limit),
-          nextCursor: rows.length > p.limit ? rows[p.limit - 1]._id : null,
-        };
+        return listPage(tx, ctx, collection, p);
       });
     },
+    snapshot(ctx, query) {
+      const d = snapshotSchema.parse(query);
+      if (d.at)
+        ensure(
+          new Date(d.at) <= new Date(),
+          422,
+          'FUTURE_HISTORY',
+          'La fecha debe estar en el pasado',
+        );
+      const load = async (tx, member) => {
+        // One database round trip after membership validation. Results are emitted
+        // per record, rather than as a single BSON document with a 16 MiB ceiling.
+        const pipeline = [
+          { $match: { _id: ctx.businessId, businessId: ctx.businessId } },
+          { $project: { _id: 0, business: '$$ROOT' } },
+        ];
+        for (const name of d.collections) {
+          const collection = snapshotCollections[name];
+          const stages = d.at
+            ? [
+                {
+                  $match: {
+                    businessId: ctx.businessId,
+                    collection,
+                    recordedAt: { $lte: new Date(d.at) },
+                  },
+                },
+                { $sort: { entityId: 1, 'after.revision': -1, order: -1 } },
+                { $group: { _id: '$entityId', snapshot: { $first: '$after' } } },
+                { $sort: { _id: 1 } },
+                { $limit: 101 },
+                { $replaceRoot: { newRoot: '$snapshot' } },
+              ]
+            : [
+                { $match: { businessId: ctx.businessId } },
+                { $sort: { createdAt: -1, _id: -1 } },
+                { $limit: 101 },
+              ];
+          pipeline.push({
+            $lookup: { from: d.at ? 'audit' : collection, pipeline: stages, as: name },
+          });
+        }
+        pipeline.push(
+          {
+            $project: {
+              entries: [
+                { resource: { $literal: 'business' }, rows: ['$business'] },
+                ...d.collections.map((name) => ({
+                  resource: { $literal: name },
+                  rows: '$' + name,
+                })),
+              ],
+            },
+          },
+          { $unwind: '$entries' },
+          { $unwind: { path: '$entries.rows', preserveNullAndEmptyArrays: true } },
+          { $replaceRoot: { newRoot: '$entries' } },
+        );
+        const rows = await db
+          .collection('businesses')
+          .aggregate(pipeline, { session: tx.session })
+          .toArray();
+        if (!rows.length) throw missing();
+        const collections = Object.fromEntries(
+          d.collections.map((name) => [
+            name,
+            {
+              data: [],
+              nextCursor: null,
+              ...(d.at ? { at: d.at, readOnly: true, basis: 'recordedAt' } : {}),
+            },
+          ]),
+        );
+        let business;
+        for (const row of rows) {
+          if (row.resource === 'business') business = row.rows;
+          else if (row.rows) collections[row.resource].data.push(row.rows);
+        }
+        for (const page of Object.values(collections)) {
+          page.nextCursor = page.data.length > 100 ? page.data[99]._id : null;
+          page.data = page.data.slice(0, 100);
+        }
+        return {
+          business: businessSettings({ ...business, role: member.role }),
+          collections,
+          ...(d.at ? { at: d.at, readOnly: true } : {}),
+        };
+      };
+      return authorized(ctx, load).catch((error) => {
+        // MongoDB 7 does not support transactional lookups into sharded collections.
+        // Keep the existing sequential read path for that deployment topology.
+        if (error.code !== 263) throw error;
+        return authorized(ctx, async (tx, member) => {
+          const business = await tx.get('businesses', ctx.businessId),
+            collections = {};
+          for (const name of d.collections)
+            collections[name] = d.at
+              ? await historyPage(tx, ctx, {
+                  collection: snapshotCollections[name],
+                  at: d.at,
+                  limit: 100,
+                })
+              : await listPage(tx, ctx, snapshotCollections[name], { limit: 100 });
+          return {
+            business: businessSettings({ ...business, role: member.role }),
+            collections,
+            ...(d.at ? { at: d.at, readOnly: true } : {}),
+          };
+        });
+      });
+    },
+
     get(ctx, collection, entityId) {
       ensure(readable.has(collection), 404, 'NOT_FOUND', 'Recurso no encontrado');
       id.parse(entityId);
@@ -72,33 +244,7 @@ export function createQueries({ db, commands }) {
       const at = new Date(d.at);
       ensure(at <= new Date(), 422, 'FUTURE_HISTORY', 'La fecha debe estar en el pasado');
       return authorized(ctx, async (tx) => {
-        const match = {
-          businessId: ctx.businessId,
-          collection: d.collection,
-          recordedAt: { $lte: at },
-        };
-        const rows = await db
-          .collection('audit')
-          .aggregate(
-            [
-              { $match: match },
-              { $sort: { entityId: 1, 'after.revision': -1, order: -1 } },
-              { $group: { _id: '$entityId', snapshot: { $first: '$after' } } },
-              ...(d.cursor ? [{ $match: { _id: { $gt: d.cursor } } }] : []),
-              { $sort: { _id: 1 } },
-              { $limit: d.limit + 1 },
-              { $replaceRoot: { newRoot: '$snapshot' } },
-            ],
-            { session: tx.session },
-          )
-          .toArray();
-        return {
-          at: d.at,
-          readOnly: true,
-          basis: 'recordedAt',
-          data: rows.slice(0, d.limit),
-          nextCursor: rows.length > d.limit ? rows[d.limit - 1]._id : null,
-        };
+        return historyPage(tx, ctx, d);
       });
     },
     audit(ctx, query) {

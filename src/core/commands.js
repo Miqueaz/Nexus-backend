@@ -72,9 +72,9 @@ export function createCommands({ uow, idempotency, audit, logger, moduleAccess }
     },
     async read(ctx, operation, { module } = {}) {
       return uow.run(ctx.businessId, async (tx) => {
-        await membership(tx, ctx);
+        const member = await membership(tx, ctx);
         if (module) await moduleAccess.assertEnabled(tx, module);
-        return operation(tx);
+        return operation(tx, member);
       });
     },
   };
