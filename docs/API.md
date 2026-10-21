@@ -127,6 +127,7 @@ Venta: retorna `subtotalMinor`, `discountMinor`, `totalMinor`, `costMinor`, `pro
 | POST `/credit-lines` | `{name,limitMinor,notes?,statementCutoffOn?,paymentDueOn?,minimumPaymentMinor?,interestFreePaymentMinor?,annualInterestBps?}` |
 | PATCH `/credit-lines/:id` | `{name?,limitMinor?,archived?,notes?,...estadoDeCuenta,revision}`; requiere deuda cero |
 | GET `/credit-lines/balances` | Lista con cupo usado, disponible y campos del estado de cuenta |
+| POST `/credit-lines/:id/payments` ★ | `{walletId,amountMinor,description?,revision}`; devuelve línea, importe y pagos aplicados |
 | POST `/debts` ★ | Ejemplo inferior |
 | POST `/debts/:id/payments` ★ | `{walletId,amountMinor,description?,revision}`; devuelve `{debt,payment}` |
 | POST `/debts/:id/reschedule` ★ | `{terms,firstDueOn,mode,additionalFeeMinor?:0,reason,revision}` |
@@ -200,3 +201,12 @@ La eliminación es lógica: `PATCH /wallets/:id` o `/credit-lines/:id` con `{arc
 Ventas requiere Finanzas e Inventario; una combinación inconsistente devuelve 422. Las cotizaciones independientes siguen disponibles; convertir requiere también Ventas. Desactivar un módulo impide sus escrituras con `409 MODULE_DISABLED`, incluyendo servicios compuestos y cálculo de proyecciones. Las lecturas autorizadas siguen disponibles para referencias y consultas históricas, y no se eliminan datos. Los roles conservan sus límites habituales; desactivar módulos no sustituye el control de acceso.
 
 Las ediciones solo admiten identidad y selección de módulos; moneda y zona horaria permanecen constantes. Un PATCH parcial conserva valores omitidos. Se exige `revision`, se rechazan cambios obsoletos con 409, y cada edición queda en auditoría. Editores/lectores reciben 403; usuarios sin membresía reciben 404. Crear un espacio añade al usuario autenticado como su propietario. `Idempotency-Key` es opcional para crear negocios y permite reintentar incluso solicitudes concurrentes sin crear espacios o membresías duplicados; reutilizar la clave con otro cuerpo produce 409.
+
+
+### Movimientos con líneas de crédito
+
+Una compra usa `POST /debts` con `kind:"deferred"`, `creditLineId`, capital, un plazo y primer vencimiento; `category` es opcional y usa `General` por defecto. Consume cupo sin registrar salida inicial de efectivo ni modificar inventario. La web proyecta esas compras como movimientos de crédito a partir de las deudas persistidas, con su principal original; no suma cargos de una reprogramación al importe de la compra histórica. No son egresos de caja hasta registrar el pago.
+
+Un abono desde Movimientos usa `POST /credit-lines/:id/payments`, indicando la cuenta de origen y la revisión actual de la línea. Reparte el importe entre compromisos activos por su próximo vencimiento; desempata por fecha de creación e ID. Dentro de cada compromiso conserva la asignación habitual de cargos y capital. Descuenta efectivo, crea los pagos auditados y libera cupo. Todo se ejecuta en una sola transacción: saldo insuficiente, revisión obsoleta o sobrepago revierte la operación completa. Es idempotente, exige rol de escritura y Finanzas activo, respeta aislamiento por negocio y no admite líneas archivadas ni abonos mayores a la deuda.
+
+El origen web de producción permitido en CORS es `https://nexo.aethel.ing`, sin barra final. Se conserva el origen del Site y los de desarrollo; no se permite `*`. Los cambios del mínimo reportado o pago para no generar intereses siguen siendo manuales.

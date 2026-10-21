@@ -40,6 +40,41 @@ export function createDebtsService({ commands, finance, contacts, financialManag
     // Escritura deliberada en el agregado para serializar disposiciones concurrentes.
     await tx.update('creditLines', lineId, line.revision, { lastActivityAt: new Date() });
   }
+  async function payInTx(tx, debtId, d, checkCapacity = true) {
+    const debt = await tx.get('debts', debtId);
+    ensure(debt.status === 'active', 409, 'DEBT_SETTLED', 'La deuda ya está liquidada');
+    const allocation = allocatePayment(debt.schedule, d.amountMinor);
+    const paidPrincipalMinor = debt.paidPrincipalMinor + allocation.principalMinor;
+    const paidFeeMinor = debt.paidFeeMinor + allocation.feeMinor;
+    const payment = await tx.insert('debtPayments', {
+      debtId,
+      walletId: d.walletId,
+      amountMinor: d.amountMinor,
+      principalMinor: allocation.principalMinor,
+      feeMinor: allocation.feeMinor,
+      description: d.description,
+    });
+    await finance.post(tx, {
+      walletId: d.walletId,
+      amountMinor: -d.amountMinor,
+      kind: 'debtPayment',
+      category: debt.kind,
+      operatingMinor: -(debt.kind === 'credit' ? allocation.feeMinor : d.amountMinor),
+      description: d.description,
+      reference: payment._id,
+    });
+    const updated = await tx.update('debts', debtId, d.revision, {
+      schedule: allocation.schedule,
+      paidPrincipalMinor,
+      paidFeeMinor,
+      status:
+        paidPrincipalMinor === debt.principalMinor && paidFeeMinor === debt.feeMinor
+          ? 'settled'
+          : 'active',
+    });
+    if (checkCapacity && debt.creditLineId) await capacity(tx, debt.creditLineId, 0);
+    return { debt: updated, payment };
+  }
   return {
     createLine(ctx, input) {
       const d = creditLineCreateSchema.parse(input);
@@ -86,6 +121,7 @@ export function createDebtsService({ commands, finance, contacts, financialManag
           walletId: id.optional(),
           creditLineId: id.optional(),
           contactId: id.optional(),
+          category: text.default('General'),
           notes,
         })
         .parse(input);
@@ -124,39 +160,59 @@ export function createDebtsService({ commands, finance, contacts, financialManag
         .strictObject({ walletId: id, amountMinor: amount, description: notes, revision })
         .parse(input);
       return commands.run(ctx, 'debt.payment.created', { debtId, ...d }, async (tx) => {
-        const debt = await tx.get('debts', debtId);
-        ensure(debt.status === 'active', 409, 'DEBT_SETTLED', 'La deuda ya está liquidada');
-        const allocation = allocatePayment(debt.schedule, d.amountMinor);
-        const paidPrincipalMinor = debt.paidPrincipalMinor + allocation.principalMinor;
-        const paidFeeMinor = debt.paidFeeMinor + allocation.feeMinor;
-        const payment = await tx.insert('debtPayments', {
-          debtId,
-          walletId: d.walletId,
-          amountMinor: d.amountMinor,
-          principalMinor: allocation.principalMinor,
-          feeMinor: allocation.feeMinor,
-          description: d.description,
-        });
-        await finance.post(tx, {
-          walletId: d.walletId,
-          amountMinor: -d.amountMinor,
-          kind: 'debtPayment',
-          category: debt.kind,
-          operatingMinor: -(debt.kind === 'credit' ? allocation.feeMinor : d.amountMinor),
-          description: d.description,
-          reference: payment._id,
-        });
-        const updated = await tx.update('debts', debtId, d.revision, {
-          schedule: allocation.schedule,
-          paidPrincipalMinor,
-          paidFeeMinor,
-          status:
-            paidPrincipalMinor === debt.principalMinor && paidFeeMinor === debt.feeMinor
-              ? 'settled'
-              : 'active',
-        });
-        if (debt.creditLineId) await capacity(tx, debt.creditLineId, 0);
-        return { debt: updated, payment };
+        return payInTx(tx, debtId, d);
+      });
+    },
+    payLine(ctx, lineId, input) {
+      id.parse(lineId);
+      const d = z
+        .strictObject({ walletId: id, amountMinor: amount, description: notes, revision })
+        .parse(input);
+      return commands.run(ctx, 'debt.line.payment.created', { lineId, ...d }, async (tx) => {
+        const line = await tx.get('creditLines', lineId);
+        ensure(!line.archived, 422, 'CREDIT_LINE_ARCHIVED', 'Línea de crédito archivada');
+        ensure(
+          line.revision === d.revision,
+          409,
+          'REVISION_CONFLICT',
+          'La línea cambió; recarga su versión',
+        );
+        const remaining = (debt) => {
+          const p = pending(debt);
+          return p.principalMinor + p.feeMinor;
+        };
+        const firstDue = (debt) =>
+          debt.schedule.find(
+            (r) => r.principalMinor + r.feeMinor > r.paidPrincipalMinor + r.paidFeeMinor,
+          )?.dueOn ?? debt.firstDueOn;
+        const debts = (await tx.find('debts', { creditLineId: lineId, status: 'active' }))
+          .filter((debt) => remaining(debt) > 0)
+          .sort(
+            (a, b) =>
+              firstDue(a).localeCompare(firstDue(b)) ||
+              a.createdAt - b.createdAt ||
+              a._id.localeCompare(b._id),
+          );
+        const total = debts.reduce((sum, debt) => safeInteger(sum + remaining(debt)), 0);
+        ensure(total > 0, 409, 'NO_PENDING_DEBT', 'La línea no tiene deuda pendiente');
+        ensure(
+          d.amountMinor <= total,
+          422,
+          'OVERPAYMENT',
+          'El pago supera el saldo pendiente de la línea',
+        );
+        let left = d.amountMinor;
+        const payments = [];
+        for (const debt of debts) {
+          if (!left) break;
+          const amountMinor = Math.min(left, remaining(debt));
+          payments.push(
+            await payInTx(tx, debt._id, { ...d, amountMinor, revision: debt.revision }, false),
+          );
+          left -= amountMinor;
+        }
+        await capacity(tx, lineId, 0);
+        return { line: await tx.get('creditLines', lineId), payments, amountMinor: d.amountMinor };
       });
     },
     reschedule(ctx, debtId, input) {

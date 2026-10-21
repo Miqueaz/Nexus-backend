@@ -113,3 +113,5 @@ Referencias oficiales: [MongoDB en Workers](https://developers.cloudflare.com/wo
 
 
 El dominio de producción `api.nexo.aethel.ing` está declarado en `routes` como `custom_domain: true`; Wrangler lo enlaza al mismo Worker al desplegar en la cuenta que administra la zona `aethel.ing`. `workers_dev` sigue habilitado para conservar el alias existente. Los clientes usan `https://api.nexo.aethel.ing`; CORS debe contener el origen de la web, no la URL de la API. Los secretos y la base MongoDB no cambian por este cambio de dominio.
+
+`CORS_ORIGINS` incluye `https://nexo.aethel.ing`. Configúralo como origen exacto sin la barra final de la URL. El preflight permite Authorization, Content-Type e Idempotency-Key. Si mantienes una variable equivalente en un entorno distinto o en una instalación Node, agrega allí el mismo origen.

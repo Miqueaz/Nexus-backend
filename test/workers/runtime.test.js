@@ -1,6 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -25,7 +26,15 @@ before(
       workers: [
         {
           configPath: './wrangler.jsonc',
-          vars: { MONGO_DB: db.databaseName, MONGO_AUTO_MIGRATE: 'true', LOG_LEVEL: 'silent' },
+          vars: {
+            MONGO_DB: db.databaseName,
+            MONGO_AUTO_MIGRATE: 'true',
+            LOG_LEVEL: 'silent',
+            // Read the tracked production origins; ignored .dev.vars is local-only.
+            CORS_ORIGINS: /"CORS_ORIGINS":\s*"([^"]+)"/.exec(
+              readFileSync(new URL('../../wrangler.jsonc', import.meta.url), 'utf8'),
+            )[1],
+          },
           secrets: { MONGO_URI: rs.getUri(), JWT_SECRET: 'workers-test-secret-'.repeat(6) },
         },
       ],
@@ -78,6 +87,35 @@ test('Workerd inicia el bundle, aplica CORS y rechaza JSON/cuerpos inválidos si
     headers: { Origin: 'http://localhost:5173', 'Access-Control-Request-Method': 'POST' },
   });
   assert.equal(cors.headers.get('Access-Control-Allow-Origin'), 'http://localhost:5173');
+  const productionCors = await worker.fetch(
+    'https://api.example.com/api/v1/businesses/test/credit-lines/test/payments',
+    {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://nexo.aethel.ing',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'authorization,content-type,idempotency-key',
+      },
+    },
+  );
+  assert.equal(productionCors.status, 204);
+  assert.equal(
+    productionCors.headers.get('Access-Control-Allow-Origin'),
+    'https://nexo.aethel.ing',
+  );
+  assert.match(productionCors.headers.get('Access-Control-Allow-Headers'), /Authorization/);
+  const deniedCors = await worker.fetch('https://api.example.com/api/v1/auth/login', {
+    method: 'OPTIONS',
+    headers: {
+      Origin: 'https://nexo.aethel.ing.evil.test',
+      'Access-Control-Request-Method': 'POST',
+    },
+  });
+  assert.notEqual(
+    deniedCors.headers.get('Access-Control-Allow-Origin'),
+    'https://nexo.aethel.ing.evil.test',
+  );
+
   const invalid = await worker.fetch('https://api.example.com/api/v1/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '192.0.2.11' },
@@ -418,4 +456,69 @@ test('Workerd actualiza identidad/módulos solo por propietario y protege los m�
     randomUUID(),
   );
   assert.equal(wallet.status, 201, JSON.stringify(wallet.data));
+});
+
+test('Workerd registra compras y abono a una línea sin crear efectivo ni duplicar pagos', async () => {
+  const f = await fixture();
+  const w = await call(
+    'POST',
+    f.base + '/wallets',
+    { name: 'Caja', openingBalanceMinor: 1000 },
+    f.token,
+    randomUUID(),
+  );
+  const line = await call(
+    'POST',
+    f.base + '/credit-lines',
+    { name: 'Crédito', limitMinor: 1000 },
+    f.token,
+    randomUUID(),
+  );
+  const debt = await call(
+    'POST',
+    f.base + '/debts',
+    {
+      name: 'Compra',
+      kind: 'deferred',
+      creditLineId: line.data._id,
+      principalMinor: 300,
+      terms: 1,
+      firstDueOn: '2027-01-01',
+      category: 'Operación',
+    },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(debt.status, 201, JSON.stringify(debt.data));
+  let wallet = await call('GET', f.base + '/wallets/' + w.data._id, undefined, f.token);
+  assert.equal(wallet.data.balanceMinor, 1000);
+  const current = await call('GET', f.base + '/credit-lines/' + line.data._id, undefined, f.token);
+  const key = randomUUID(),
+    body = {
+      walletId: w.data._id,
+      amountMinor: 100,
+      description: 'Abono',
+      revision: current.data.revision,
+    };
+  const first = await call(
+    'POST',
+    f.base + '/credit-lines/' + line.data._id + '/payments',
+    body,
+    f.token,
+    key,
+  );
+  assert.equal(first.status, 201, JSON.stringify(first.data));
+  const retry = await call(
+    'POST',
+    f.base + '/credit-lines/' + line.data._id + '/payments',
+    body,
+    f.token,
+    key,
+  );
+  assert.equal(retry.status, 201, JSON.stringify(retry.data));
+  wallet = await call('GET', f.base + '/wallets/' + w.data._id, undefined, f.token);
+  assert.equal(wallet.data.balanceMinor, 900);
+  const balances = await call('GET', f.base + '/credit-lines/balances', undefined, f.token);
+  assert.equal(balances.data[0].usedMinor, 200);
+  assert.equal(await db.collection('debtPayments').countDocuments({ businessId: f.businessId }), 1);
 });

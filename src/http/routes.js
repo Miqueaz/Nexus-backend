@@ -81,6 +81,12 @@ export function createRoutes(s) {
   write('post', '/credit-lines', (r) => s.debts.createLine(r.context, r.body), create);
   write('patch', '/credit-lines/:id', (r) => s.debts.updateLine(r.context, r.params.id, r.body));
   read('/credit-lines/balances', (r) => s.debts.lineBalances(r.context));
+  write(
+    'post',
+    '/credit-lines/:id/payments',
+    (r) => s.debts.payLine(r.context, r.params.id, r.body),
+    financial,
+  );
   write('post', '/debts', (r) => s.debts.create(r.context, r.body), financial);
   write(
     'post',

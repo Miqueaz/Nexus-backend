@@ -971,3 +971,105 @@ test('Crear espacio con la misma clave, incluso concurrentemente, conserva un so
     1,
   );
 });
+
+test('Abono a línea se reparte por vencimiento, libera cupo y revierte completo ante saldo insuficiente', async () => {
+  const f = await fixture(),
+    w = await wallet(f, 1000),
+    empty = await wallet(f, 0);
+  let line = (
+    await call(f, 'post', '/credit-lines', { name: 'Tarjeta', limitMinor: 1000 }).expect(201)
+  ).body;
+  const createDebt = async (name, principalMinor, feeMinor, firstDueOn) =>
+    (
+      await call(f, 'post', '/debts', {
+        name,
+        kind: 'deferred',
+        creditLineId: line._id,
+        principalMinor,
+        feeMinor,
+        firstDueOn,
+        terms: 1,
+        category: 'Servicios',
+      }).expect(201)
+    ).body;
+  const later = await createDebt('Compra posterior', 100, 10, '2027-03-01'),
+    earlier = await createDebt('Compra primero', 200, 5, '2027-01-01');
+  line = (await call(f, 'get', `/credit-lines/${line._id}`).expect(200)).body;
+  const key = randomUUID(),
+    body = {
+      walletId: w._id,
+      amountMinor: 250,
+      description: 'Abono desde Movimientos',
+      revision: line.revision,
+    };
+  const paid = (await call(f, 'post', `/credit-lines/${line._id}/payments`, body, key).expect(201))
+    .body;
+  assert.equal(paid.payments.length, 2);
+  assert.equal(paid.payments[0].debt._id, earlier._id);
+  assert.equal(paid.payments[0].debt.status, 'settled');
+  assert.equal(paid.payments[1].debt._id, later._id);
+  assert.equal(paid.payments[1].payment.feeMinor, 10);
+  assert.equal(paid.payments[1].payment.principalMinor, 35);
+  await call(f, 'post', `/credit-lines/${line._id}/payments`, body, key).expect(201);
+  assert.equal((await call(f, 'get', `/wallets/${w._id}`).expect(200)).body.balanceMinor, 750);
+  assert.equal((await call(f, 'get', '/debt-payments').expect(200)).body.data.length, 2);
+  assert.equal(
+    (await call(f, 'get', `/debts/${later._id}`).expect(200)).body.category,
+    'Servicios',
+  );
+  let balance = (await call(f, 'get', '/credit-lines/balances').expect(200)).body[0];
+  assert.equal(balance.usedMinor, 65);
+  assert.equal(balance.availableMinor, 935);
+  const count = await db.collection('audit').countDocuments({ businessId: f.business._id });
+  await call(f, 'post', `/credit-lines/${line._id}/payments`, {
+    walletId: empty._id,
+    amountMinor: 65,
+    revision: paid.line.revision,
+  }).expect(422);
+  assert.equal(await db.collection('audit').countDocuments({ businessId: f.business._id }), count);
+  assert.equal((await call(f, 'get', '/debt-payments').expect(200)).body.data.length, 2);
+  balance = (await call(f, 'get', '/credit-lines/balances').expect(200)).body[0];
+  assert.equal(balance.usedMinor, 65);
+  await call(f, 'post', `/credit-lines/${line._id}/payments`, {
+    walletId: w._id,
+    amountMinor: 66,
+    revision: balance.revision,
+  }).expect(422);
+  const viewer = await user();
+  await call(f, 'post', '/members', { email: viewer.email, role: 'viewer' }).expect(201);
+  await call({ ...f, token: viewer.token }, 'post', `/credit-lines/${line._id}/payments`, {
+    walletId: w._id,
+    amountMinor: 1,
+    revision: balance.revision,
+  }).expect(403);
+  const other = await fixture();
+  await call(other, 'post', `/credit-lines/${line._id}/payments`, {
+    walletId: w._id,
+    amountMinor: 1,
+    revision: balance.revision,
+  }).expect(404);
+  const finalBody = { walletId: w._id, amountMinor: 65, revision: balance.revision };
+  const concurrent = await Promise.all([
+    call(f, 'post', `/credit-lines/${line._id}/payments`, finalBody),
+    call(f, 'post', `/credit-lines/${line._id}/payments`, finalBody),
+  ]);
+  assert.deepEqual(concurrent.map((r) => r.status).sort(), [201, 409]);
+  assert.equal((await call(f, 'get', `/wallets/${w._id}`).expect(200)).body.balanceMinor, 685);
+  balance = (await call(f, 'get', '/credit-lines/balances').expect(200)).body[0];
+  assert.equal(balance.usedMinor, 0);
+  await call(f, 'post', `/credit-lines/${line._id}/payments`, {
+    walletId: w._id,
+    amountMinor: 1,
+    revision: balance.revision,
+  }).expect(409);
+  await call(f, 'patch', `/credit-lines/${line._id}`, {
+    archived: true,
+    revision: balance.revision,
+  }).expect(200);
+  const archived = await call(f, 'post', `/credit-lines/${line._id}/payments`, {
+    walletId: w._id,
+    amountMinor: 1,
+    revision: balance.revision + 1,
+  }).expect(422);
+  assert.equal(archived.body.error.code, 'CREDIT_LINE_ARCHIVED');
+});
