@@ -595,3 +595,70 @@ test('Workerd configura Google, guarda intentos con vencimiento y rechaza creden
     ),
   );
 });
+
+test('Workers calcula y guarda ambos mínimos con deuda sin alterar cartera ni cupo', async () => {
+  const f = await fixture();
+  const l = await call(
+    'POST',
+    f.base + '/credit-lines',
+    { name: 'Mínimos Worker', limitMinor: 100000 },
+    f.token,
+  );
+  const d = await call(
+    'POST',
+    f.base + '/debts',
+    {
+      name: 'Compra',
+      kind: 'deferred',
+      creditLineId: l.data._id,
+      principalMinor: 10000,
+      terms: 1,
+      firstDueOn: '2027-01-10',
+    },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(d.status, 201);
+  const line = await call('GET', f.base + '/credit-lines/' + l.data._id, undefined, f.token);
+  const body = {
+    periodStartOn: '2026-09-01',
+    cutoffOn: '2026-09-30',
+    dueOn: '2026-10-10',
+    revolvingMinor: 10000,
+  };
+  const preview = await call(
+    'POST',
+    f.base + '/credit-lines/' + l.data._id + '/statements/preview',
+    body,
+    f.token,
+  );
+  assert.equal(preview.status, 200);
+  assert.equal(preview.data.estimatedMinimumMinor, 1250);
+  const closed = await call(
+    'POST',
+    f.base + '/credit-lines/' + l.data._id + '/statements',
+    { ...body, revision: line.data.revision },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(closed.status, 201);
+  const official = await call(
+    'PATCH',
+    f.base + '/credit-statements/' + closed.data._id + '/official',
+    { officialMinimumMinor: 0, officialInterestFreeMinor: 10000, revision: closed.data.revision },
+    f.token,
+  );
+  assert.equal(official.status, 200);
+  assert.equal(official.data.officialMinimumMinor, 0);
+  assert.equal(official.data.calculation.estimatedMinimumMinor, 1250);
+  const snapshot = await call(
+    'GET',
+    f.base + '/snapshot?collections=credit-statements',
+    undefined,
+    f.token,
+  );
+  assert.equal(snapshot.status, 200);
+  assert.equal(snapshot.data.collections['credit-statements'].data.length, 1);
+  const balances = await call('GET', f.base + '/credit-lines/balances', undefined, f.token);
+  assert.equal(balances.data[0].usedMinor, 10000);
+});

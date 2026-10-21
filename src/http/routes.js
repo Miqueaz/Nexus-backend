@@ -97,12 +97,30 @@ export function createRoutes(s) {
   write('post', '/projections', (r) => s.projections.save(r.context, r.body), create);
   write('post', '/credit-lines', (r) => s.debts.createLine(r.context, r.body), create);
   write('patch', '/credit-lines/:id', (r) => s.debts.updateLine(r.context, r.params.id, r.body));
+  write('patch', '/credit-lines/:id/minimum-rule', (r) =>
+    s.creditStatements.rule(r.context, r.params.id, r.body),
+  );
+  write('post', '/credit-lines/:id/statements/preview', (r) =>
+    s.creditStatements.preview(r.context, r.params.id, r.body),
+  );
+  write(
+    'post',
+    '/credit-lines/:id/statements',
+    (r) => s.creditStatements.close(r.context, r.params.id, r.body),
+    financial,
+  );
+  write('patch', '/credit-statements/:id/official', (r) =>
+    s.creditStatements.official(r.context, r.params.id, r.body),
+  );
   read('/credit-lines/balances', (r) => s.debts.lineBalances(r.context));
   write(
     'post',
     '/credit-lines/:id/payments',
     (r) => s.debts.payLine(r.context, r.params.id, r.body),
     financial,
+  );
+  write('patch', '/debts/:id/billing-kind', (r) =>
+    s.creditStatements.classify(r.context, r.params.id, r.body),
   );
   write('post', '/debts', (r) => s.debts.create(r.context, r.body), financial);
   write(
@@ -127,6 +145,7 @@ export function createRoutes(s) {
     'contact-lists': 'contactLists',
     'stock-movements': 'stockMovements',
     'credit-lines': 'creditLines',
+    'credit-statements': 'creditStatements',
     'debt-payments': 'debtPayments',
   };
   read('/:collection', (r) =>

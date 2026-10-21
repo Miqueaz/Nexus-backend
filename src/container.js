@@ -17,6 +17,7 @@ import { createSalesService } from './modules/sales/service.js';
 import { createQuotesService } from './modules/planning/quotes.js';
 import { createPlanningService } from './modules/planning/resources.js';
 import { createProjectionsService } from './modules/planning/projections.js';
+import { createCreditStatementsService } from './modules/debts/statements.js';
 import { createDebtsService } from './modules/debts/service.js';
 import { createFinanceAdapter } from './adapters/modules/finance.js';
 import { createFinancialManagementAdapter } from './adapters/modules/financial-management.js';
@@ -76,6 +77,7 @@ export async function createContainer({ client, db, config, logger, googleIdenti
     planning: createPlanningService({ commands }),
     projections: createProjectionsService({ commands }),
     debts: createDebtsService({ commands, finance, contacts, financialManagement }),
+    creditStatements: createCreditStatementsService({ commands }),
     queries: createQueries({ db, commands }),
   };
 }

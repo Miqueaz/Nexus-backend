@@ -15,6 +15,7 @@ export const collections = [
   'events',
   'projections',
   'creditLines',
+  'creditStatements',
   'debts',
   'debtPayments',
 ];
@@ -79,6 +80,9 @@ export async function ensureIndexes(db) {
   }
   for (const name of collections)
     await db.collection(name).createIndex({ businessId: 1, createdAt: -1, _id: -1 });
+  await db
+    .collection('creditStatements')
+    .createIndex({ businessId: 1, creditLineId: 1, cutoffOn: 1 }, { unique: true });
   await db.collection('users').createIndex({ email: 1 }, { unique: true });
   await db
     .collection('users')
@@ -112,6 +116,7 @@ export async function ensureIndexes(db) {
 /** Verifica las restricciones de consistencia sin crear índices desde Workers. */
 export async function assertDatabasePrepared(db) {
   const required = [
+    ['creditStatements', { businessId: 1, creditLineId: 1, cutoffOn: 1 }],
     ['users', { email: 1 }],
     ['users', { googleSub: 1 }],
     ['memberships', { businessId: 1, userId: 1 }],

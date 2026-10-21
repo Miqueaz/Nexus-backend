@@ -15,6 +15,7 @@ const readable = new Set([
   'events',
   'projections',
   'creditLines',
+  'creditStatements',
   'debts',
   'debtPayments',
 ]);
@@ -25,6 +26,7 @@ const snapshotCollections = Object.fromEntries(
       stockMovements: 'stock-movements',
       contactLists: 'contact-lists',
       creditLines: 'credit-lines',
+      creditStatements: 'credit-statements',
       debtPayments: 'debt-payments',
     }[name] || name,
     name,

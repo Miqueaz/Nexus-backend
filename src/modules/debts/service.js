@@ -1,3 +1,4 @@
+import { allocateStatementPayment } from './statements.js';
 import {
   z,
   id,
@@ -72,6 +73,10 @@ export function createDebtsService({ commands, finance, contacts, financialManag
           ? 'settled'
           : 'active',
     });
+    if (debt.creditLineId) {
+      const b = await tx.get('businesses', tx.businessId);
+      await allocateStatementPayment(tx, debt.creditLineId, payment, b.timezone);
+    }
     if (checkCapacity && debt.creditLineId) await capacity(tx, debt.creditLineId, 0);
     return { debt: updated, payment };
   }
@@ -113,6 +118,7 @@ export function createDebtsService({ commands, finance, contacts, financialManag
         .strictObject({
           name: text,
           kind: z.enum(['credit', 'deferred']),
+          billingKind: z.enum(['revolving', 'interestFree', 'installments']).default('revolving'),
           principalMinor: amount,
           feeMinor: money.default(0),
           terms,

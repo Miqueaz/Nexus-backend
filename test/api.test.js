@@ -1087,7 +1087,7 @@ test('Snapshot agrupa lecturas con aislamiento, historial y paginación sin trun
   const current = (await call(f, 'get', '/snapshot').expect(200)).body;
   assert.equal(current.business._id, f.business._id);
   assert.equal(current.business.role, 'owner');
-  assert.equal(Object.keys(current.collections).length, 15);
+  assert.equal(Object.keys(current.collections).length, 16);
   assert.equal(current.collections.wallets.data[0].balanceMinor, 10100);
   assert.deepEqual(
     current.collections.movements,
@@ -1224,5 +1224,126 @@ test('Reprogramación manual valida totales y conserva abonos, efectivo, revisi�
     ...base,
     revision: settled.debt.revision,
     installmentsMinor: [20000, 0, 71500],
+  }).expect(409);
+});
+
+test('Estados de cuenta permiten dos mínimos con deuda, cierre inmutable, pagos reales e historial sin duplicaciones', async () => {
+  const f = await fixture(),
+    w = await wallet(f, 300000);
+  const l = (
+    await call(f, 'post', '/credit-lines', {
+      name: 'Tarjeta con estados',
+      limitMinor: 500000,
+    }).expect(201)
+  ).body;
+  const debt = (
+    await call(f, 'post', '/debts', {
+      name: 'Compra normal',
+      kind: 'deferred',
+      billingKind: 'revolving',
+      creditLineId: l._id,
+      principalMinor: 200000,
+      terms: 1,
+      firstDueOn: '2027-01-10',
+    }).expect(201)
+  ).body;
+  const current = (await call(f, 'get', `/credit-lines/${l._id}`).expect(200)).body;
+  await call(f, 'patch', `/credit-lines/${l._id}`, {
+    name: 'No permitido',
+    revision: current.revision,
+  }).expect(409);
+  const changed = (
+    await call(f, 'patch', `/credit-lines/${l._id}/minimum-rule`, {
+      rule: { issuer: 'Emisor propio' },
+      revision: current.revision,
+    }).expect(200)
+  ).body;
+  const input = {
+    periodStartOn: '2026-09-01',
+    cutoffOn: '2026-09-30',
+    dueOn: '2026-10-10',
+    revolvingMinor: 100000,
+  };
+  const calc = (
+    await call(f, 'post', `/credit-lines/${l._id}/statements/preview`, input).expect(200)
+  ).body;
+  assert.equal(calc.estimatedMinimumMinor, 6250);
+  const key = randomUUID(),
+    close = () =>
+      call(
+        f,
+        'post',
+        `/credit-lines/${l._id}/statements`,
+        { ...input, revision: changed.revision },
+        key,
+      );
+  const s = (await close().expect(201)).body;
+  assert.equal((await close().expect(201)).body._id, s._id);
+  assert.equal(
+    await db.collection('creditStatements').countDocuments({ businessId: f.business._id }),
+    1,
+  );
+  await call(f, 'post', `/credit-lines/${l._id}/statements`, {
+    ...input,
+    revision: changed.revision + 1,
+  }).expect(409);
+  await call(f, 'patch', `/credit-statements/${s._id}/official`, {
+    officialMinimumMinor: 3000,
+    officialInterestFreeMinor: 100000,
+    revision: s.revision,
+    calculation: { estimatedMinimumMinor: 0 },
+  }).expect(422);
+  const official = (
+    await call(f, 'patch', `/credit-statements/${s._id}/official`, {
+      officialMinimumMinor: 3000,
+      officialInterestFreeMinor: 100000,
+      revision: s.revision,
+    }).expect(200)
+  ).body;
+  assert.equal(official.calculation.estimatedMinimumMinor, 6250);
+  assert.equal(official.officialMinimumMinor, 3000);
+  const beforePayment = new Date().toISOString();
+  const paid = (
+    await call(f, 'post', `/debts/${debt._id}/payments`, {
+      walletId: w._id,
+      amountMinor: 5000,
+      revision: debt.revision,
+    }).expect(201)
+  ).body;
+  const withPay = (await call(f, 'get', `/credit-statements/${s._id}`).expect(200)).body;
+  assert.equal(withPay.paidMinor, 5000);
+  assert.equal(withPay.payments[0].debtPaymentId, paid.payment._id);
+  const lineNow = (await call(f, 'get', `/credit-lines/${l._id}`).expect(200)).body;
+  await call(f, 'post', `/credit-lines/${l._id}/statements`, {
+    periodStartOn: '2026-10-01',
+    cutoffOn: '2026-10-20',
+    dueOn: '2026-11-10',
+    revolvingMinor: 95000,
+    revision: lineNow.revision,
+  }).expect(201);
+  const all = (await call(f, 'get', '/credit-statements').expect(200)).body.data;
+  assert.equal(
+    all.reduce((n, p) => n + p.paidMinor, 0),
+    5000,
+  );
+  assert.equal(all.find((p) => p.cutoffOn === '2026-10-20').paidMinor, 5000);
+  assert.equal(all.find((p) => p._id === s._id).paidMinor, 0);
+  const historical = (
+    await call(
+      f,
+      'get',
+      `/history?collection=creditStatements&at=${encodeURIComponent(beforePayment)}`,
+    ).expect(200)
+  ).body.data;
+  assert.equal(historical[0].paidMinor, 0);
+  assert.equal(historical[0].officialMinimumMinor, 3000);
+  const summary = (await call(f, 'get', '/summary').expect(200)).body;
+  assert.equal(summary.wallets[0].balanceMinor, 295000);
+  const other = await fixture();
+  await call(other, 'get', `/credit-statements/${s._id}`).expect(404);
+  await call(f, 'patch', `/credit-statements/${s._id}/official`, {
+    officialMinimumMinor: 0,
+    officialInterestFreeMinor: 0,
+    revision: official.revision,
   }).expect(409);
 });
