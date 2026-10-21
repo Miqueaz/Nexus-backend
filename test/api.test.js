@@ -1347,3 +1347,84 @@ test('Estados de cuenta permiten dos mínimos con deuda, cierre inmutable, pagos
     revision: official.revision,
   }).expect(409);
 });
+
+test('Personalización por usuario y negocio: viewer, conflictos, auditoría y filtros validados', async () => {
+  const f = await fixture(),
+    viewer = await user(),
+    outsider = await user();
+  const w = await wallet(f, 10000);
+  const member = (
+    await call(f, 'post', '/members', { email: viewer.email, role: 'viewer' }).expect(201)
+  ).body;
+  const v = { ...f, token: viewer.token };
+  const widget = {
+    id: randomUUID(),
+    title: 'Compras de la tarjeta',
+    type: 'chart',
+    preset: 'creditPurchases',
+    accounts: [],
+    periodMode: 'custom',
+    from: '2026-10-01',
+    to: '2026-10-21',
+    category: '',
+    limit: 8,
+    size: 'wide',
+  };
+  const preferences = { version: 1, walletOrder: [w._id], creditOrder: [], widgets: [widget] };
+  const first = (await call(v, 'put', '/preferences', { revision: 0, preferences }).expect(200))
+    .body;
+  assert.equal(first.preferencesRevision, 1);
+  assert.deepEqual(first.uiPreferences, preferences);
+  assert.equal(
+    (await call(v, 'put', '/preferences', { revision: 0, preferences }).expect(200)).body
+      .preferencesRevision,
+    1,
+  );
+  assert.equal((await call(f, 'get', '').expect(200)).body.uiPreferences, null);
+  const snapshot = (await call(v, 'get', '/snapshot?collections=wallets').expect(200)).body;
+  assert.deepEqual(snapshot.business.uiPreferences, preferences);
+  assert.equal(snapshot.collections.wallets.data[0].balanceMinor, 10000);
+  assert.equal(
+    (await call(f, 'get', '/members').expect(200)).body.find((x) => x._id === member._id)
+      .uiPreferences,
+    undefined,
+  );
+  await call(v, 'put', '/preferences', {
+    revision: 0,
+    preferences: { ...preferences, widgets: [] },
+  }).expect(409);
+  await call({ ...f, token: outsider.token }, 'put', '/preferences', {
+    revision: 0,
+    preferences,
+  }).expect(404);
+  await call(v, 'post', '/movements', {
+    walletId: w._id,
+    kind: 'expense',
+    amountMinor: 1,
+    category: 'x',
+  }).expect(403);
+  for (const bad of [
+    { ...preferences, walletOrder: [w._id, w._id] },
+    { ...preferences, widgets: [widget, widget] },
+    { ...preferences, widgets: [{ ...widget, to: '2026-09-01' }] },
+    { ...preferences, widgets: [{ ...widget, preset: 'sql' }] },
+    { ...preferences, userId: outsider.id },
+    {
+      ...preferences,
+      widgets: Array.from({ length: 25 }, () => ({ ...widget, id: randomUUID() })),
+    },
+  ])
+    await call(v, 'put', '/preferences', { revision: 1, preferences: bad }).expect(422);
+  const audit = await db
+    .collection('audit')
+    .findOne({ businessId: f.business._id, action: 'preferences.updated' });
+  assert.equal(audit.actorId, viewer.id);
+  const second = await fixture();
+  assert.equal((await call(second, 'get', '').expect(200)).body.uiPreferences, null);
+  const latestMember = await db.collection('memberships').findOne({ _id: member._id });
+  await call(f, 'patch', `/members/${member._id}`, {
+    revision: latestMember.revision,
+    role: 'removed',
+  }).expect(200);
+  await call(v, 'put', '/preferences', { revision: 1, preferences }).expect(404);
+});

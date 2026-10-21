@@ -1,3 +1,4 @@
+import { personalPreferences } from '../../modules/businesses/preferences.js';
 import { z, id } from '../../core/validation.js';
 import { ensure, missing } from '../../core/errors.js';
 import { businessSettings } from '../../modules/businesses/settings.js';
@@ -200,7 +201,11 @@ export function createQueries({ db, commands }) {
           page.data = page.data.slice(0, 100);
         }
         return {
-          business: businessSettings({ ...business, role: member.role }),
+          business: businessSettings({
+            ...business,
+            role: member.role,
+            ...personalPreferences(member),
+          }),
           collections,
           ...(d.at ? { at: d.at, readOnly: true } : {}),
         };
@@ -221,7 +226,11 @@ export function createQueries({ db, commands }) {
                 })
               : await listPage(tx, ctx, snapshotCollections[name], { limit: 100 });
           return {
-            business: businessSettings({ ...business, role: member.role }),
+            business: businessSettings({
+              ...business,
+              role: member.role,
+              ...personalPreferences(member),
+            }),
             collections,
             ...(d.at ? { at: d.at, readOnly: true } : {}),
           };

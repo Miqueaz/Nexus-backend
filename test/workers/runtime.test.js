@@ -662,3 +662,53 @@ test('Workers calcula y guarda ambos mínimos con deuda sin alterar cartera ni c
   const balances = await call('GET', f.base + '/credit-lines/balances', undefined, f.token);
   assert.equal(balances.data[0].usedMinor, 10000);
 });
+
+test('Workerd guarda preferencias personales, sirve snapshot y rechaza configuración inválida', async () => {
+  const f = await fixture();
+  const preferences = {
+    version: 1,
+    walletOrder: [],
+    creditOrder: [],
+    widgets: [
+      {
+        id: randomUUID(),
+        title: 'Mi crédito',
+        type: 'metric',
+        preset: 'debt',
+        accounts: [],
+        category: '',
+        periodMode: 'global',
+        size: 'normal',
+        limit: 8,
+      },
+    ],
+  };
+  const r = await call('PUT', f.base + '/preferences', { revision: 0, preferences }, f.token);
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.preferencesRevision, 1);
+  const snapshot = await call('GET', f.base + '/snapshot?collections=wallets', undefined, f.token);
+  assert.deepEqual(snapshot.data.business.uiPreferences, preferences);
+  const other = await fixture();
+  assert.equal((await call('GET', other.base, undefined, other.token)).data.uiPreferences, null);
+  assert.equal(
+    (await call('PUT', f.base + '/preferences', { revision: 0, preferences }, other.token)).status,
+    404,
+  );
+  assert.equal(
+    (
+      await call(
+        'PUT',
+        f.base + '/preferences',
+        {
+          revision: 1,
+          preferences: {
+            ...preferences,
+            widgets: [{ ...preferences.widgets[0], preset: 'unknown' }],
+          },
+        },
+        f.token,
+      )
+    ).status,
+    422,
+  );
+});

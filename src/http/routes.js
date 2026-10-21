@@ -47,6 +47,7 @@ export function createRoutes(s) {
   const financial = { status: 201, idempotent: true };
   read('/', (r) => s.businesses.get(r.context));
   write('patch', '/', (r) => s.businesses.update(r.context, r.body));
+  write('put', '/preferences', (r) => s.businesses.savePreferences(r.context, r.body));
   read('/members', (r) => s.businesses.members(r.context));
   write('post', '/members', (r) => s.businesses.addMember(r.context, r.body), create);
   write('patch', '/members/:memberId', (r) =>

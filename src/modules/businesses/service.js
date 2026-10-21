@@ -1,5 +1,6 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { z, id, revision, parsePatch } from '../../core/validation.js';
+import { preferencesSchema, personalPreferences } from './preferences.js';
 import { ensure } from '../../core/errors.js';
 import { businessCreateSchema, businessUpdateSchema, businessSettings } from './settings.js';
 export function createBusinessService({ uow, directory, audit, commands, idempotency }) {
@@ -11,7 +12,29 @@ export function createBusinessService({ uow, directory, audit, commands, idempot
       return commands.read(ctx, async (tx) => {
         const business = await tx.get('businesses', ctx.businessId);
         const member = (await tx.find('memberships', { userId: ctx.userId }))[0];
-        return businessSettings({ ...business, role: member.role });
+        return businessSettings({ ...business, role: member.role, ...personalPreferences(member) });
+      });
+    },
+    async savePreferences(ctx, input) {
+      const data = preferencesSchema.parse(input);
+      // Only the authenticated member's presentation settings are writable here.
+      // Viewers may personalize their screen without financial write permissions.
+      return uow.run(ctx.businessId, async (tx) => {
+        const member = await commands.membership(tx, ctx);
+        if (JSON.stringify(member.uiPreferences) === JSON.stringify(data.preferences))
+          return personalPreferences(member);
+        ensure(
+          (member.preferencesRevision ?? 0) === data.revision,
+          409,
+          'PREFERENCES_CONFLICT',
+          'La configuración cambió en otra sesión. Recarga antes de guardar.',
+        );
+        const updated = await tx.update('memberships', member._id, member.revision, {
+          uiPreferences: data.preferences,
+          preferencesRevision: data.revision + 1,
+        });
+        await audit.append(tx, ctx, 'preferences.updated');
+        return personalPreferences(updated);
       });
     },
     async create(ctx, input) {
@@ -74,7 +97,11 @@ export function createBusinessService({ uow, directory, audit, commands, idempot
       );
     },
     async members(ctx) {
-      return commands.read(ctx, (tx) => tx.find('memberships'));
+      return commands.read(ctx, async (tx) =>
+        (await tx.find('memberships')).map(
+          ({ uiPreferences, preferencesRevision, ...member }) => member,
+        ),
+      );
     },
     async addMember(ctx, input) {
       const data = z
