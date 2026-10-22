@@ -143,6 +143,7 @@ export const boardSchema = z
       gridSize: z.number().finite().min(1).max(256).nullable().default(null),
       gridStep: z.number().finite().min(1).max(100).optional(),
       gridModeEnabled: z.boolean().optional(),
+      nexoBackgroundPattern: z.enum(['none', 'dots', 'lines']).optional(),
     }),
     files: z
       .record(key, raster)

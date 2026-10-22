@@ -337,3 +337,26 @@ test('Native scene validation rejects executable embeds/links and accepts bounde
     false,
   );
 });
+
+test('Nexo board backgrounds accept persisted dots/lines/none and reject unknown patterns', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const scene = JSON.parse(
+    await readFile(new URL('./fixtures/excalidraw-scene.json', import.meta.url), 'utf8'),
+  );
+  for (const pattern of ['dots', 'lines', 'none']) {
+    const parsed = createDocSchema.parse({
+      title: 'Paper',
+      kind: 'board',
+      board: { ...scene, appState: { ...scene.appState, nexoBackgroundPattern: pattern } },
+    });
+    assert.equal(parsed.board.appState.nexoBackgroundPattern, pattern);
+  }
+  assert.equal(
+    createDocSchema.safeParse({
+      title: 'Paper',
+      kind: 'board',
+      board: { ...scene, appState: { ...scene.appState, nexoBackgroundPattern: 'url(evil)' } },
+    }).success,
+    false,
+  );
+});
