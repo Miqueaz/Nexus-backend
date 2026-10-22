@@ -73,6 +73,7 @@ export async function ensureIndexes(db) {
     'sessions',
     'securityEvents',
     'authChallenges',
+    'authRateLimits',
   ]) {
     if (!(await db.listCollections({ name }, { nameOnly: true }).hasNext()))
       try {
@@ -95,6 +96,7 @@ export async function ensureIndexes(db) {
       { unique: true, partialFilterExpression: { googleSub: { $type: 'string' } } },
     );
   await db.collection('authChallenges').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+  await db.collection('authRateLimits').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
   await db.collection('sessions').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
   await db.collection('memberships').createIndex({ businessId: 1, userId: 1 }, { unique: true });
   await db.collection('memberships').createIndex({ userId: 1 });
@@ -129,6 +131,9 @@ export async function assertDatabasePrepared(db) {
     ['sales', { businessId: 1, quoteId: 1 }],
   ];
   try {
+    const authLimitIndexes = await db.collection('authRateLimits').listIndexes().toArray();
+    if (!authLimitIndexes.some((i) => i.key.expiresAt === 1 && i.expireAfterSeconds === 0))
+      throw new Error('Missing auth rate limit TTL index');
     const docIndexes = await db.collection('documents').listIndexes().toArray();
     if (
       !docIndexes.some(

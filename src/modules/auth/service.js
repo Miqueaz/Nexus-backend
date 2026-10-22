@@ -25,7 +25,9 @@ const googleInput = z.strictObject({
 const nonceHash = (nonce) => createHash('sha256').update(nonce).digest('hex');
 export async function createAuthService({ store, config, logger, googleIdentity }) {
   const secret = new TextEncoder().encode(config.jwtSecret);
-  const dummy = await hashPassword(randomUUID());
+  // Comparación sin cuenta asociada; mantiene scrypt para usuarios inexistentes
+  // sin ejecutar otra derivación al preparar cada solicitud.
+  const dummy = `scrypt:${'0'.repeat(32)}:${'0'.repeat(128)}`;
   async function security(action, userId, requestId, repository = store) {
     await repository.insertSecurityEvent({
       _id: randomUUID(),

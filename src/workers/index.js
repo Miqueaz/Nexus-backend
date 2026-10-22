@@ -7,8 +7,9 @@ import { createFetchApp } from '../http/fetch-app.js';
 import { createAuthLimiter } from './rate-limit.js';
 import { AppError } from '../core/errors.js';
 import { RequestRuntime } from './request-runtime.js';
+import { directFetch } from './direct.js';
 
-/** MongoClient vive solo durante solicitudes activas del mismo DO. */
+/** Compatibilidad con el despliegue anterior. El modo direct no invoca esta clase. */
 export class BusinessApi extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
@@ -81,6 +82,7 @@ export function shardName(pathname) {
 
 export default {
   async fetch(request, env) {
+    if (env.API_RUNTIME !== 'durable-object') return directFetch(request, env);
     const name = shardName(new URL(request.url).pathname);
     return env.BUSINESS_API.get(env.BUSINESS_API.idFromName(name)).fetch(request);
   },

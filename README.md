@@ -4,7 +4,7 @@ API REST en **JavaScript ESM / Node.js 24**, Express 5 y MongoDB. Incluye autent
 
 ## Cloudflare Workers
 
-También se incluye un despliegue para Workers con un adaptador Fetch/Hono y Durable Objects que reutilizan MongoDB. Comparte las mismas rutas y reglas del backend Node. Sigue [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md) para configurar secretos y desplegar. La configuración activa `MONGO_AUTO_MIGRATE=true` para preparar una base nueva desde el propio Worker, sin necesitar una terminal local.
+También se incluye un despliegue para Workers con un adaptador Fetch/Hono que conecta directamente a MongoDB por solicitud. Los contadores de acceso también se almacenan en MongoDB; el modo predeterminado no invoca Durable Objects. Comparte las mismas rutas y reglas del backend Node. Sigue [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md) para configurar secretos y desplegar. La configuración activa `MONGO_AUTO_MIGRATE=true` para preparar una base nueva desde el propio Worker, sin necesitar una terminal local.
 
 ```bash
 npm ci
@@ -161,3 +161,7 @@ La migración agrega `documents` y sus índices sin eliminar datos. Workers con 
 Los pizarrones admiten el campo opcional `board: {format: "excalidraw", version: 2, elements, appState, files, libraryItems}`. Si existe, `elements` del formato anterior se envía vacío y `blocks` permanece vacío. Documentos de texto no admiten `board`. El límite es 2000 elementos de escena, 100 entradas de biblioteca, 50,000 puntos y 5 MB en total. Los IDs nativos no son UUID y se validan por separado. Solo se conserva el estado visual persistente; cámara, selección y herramientas no generan escrituras.
 
 `board-schema.js` valida el contrato 0.18.1: geometría, grupos, vinculaciones de flechas/texto, presión y archivos raster. Rechaza HTML, iframes, enlaces ejecutables y colores con URLs. La lista de notas omite `board`, `elements` y `blocks`; las imágenes solo se devuelven al consultar la nota autorizada. La conversión de los dibujos anteriores ocurre en el adaptador web y la auditoría mantiene el formato previo. El esquema anterior sigue disponible para clientes y notas existentes.
+
+### Worker directo y contadores MongoDB
+
+`API_RUNTIME=direct` es el modo predeterminado. Cada solicitud administra y cierra su propio MongoClient. `authRateLimits` mantiene contadores atómicos por IP hasheada y ventana de 15 minutos, con TTL, compartidos entre todas las invocaciones. La migración agrega la colección e índice; con MONGO_AUTO_MIGRATE=true se preparan automáticamente. El login conserva scrypt y los tokens/sesiones existentes. El binding DO histórico queda disponible únicamente para reversión explícita mediante API_RUNTIME=durable-object, sin eliminar su SQLite. Véase docs/CLOUDFLARE.md para límites de CPU, latencia y transición de contadores.

@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { MongoClient } from 'mongodb';
 import { createTestHarness } from 'wrangler';
+import { createMongoAuthLimiter } from '../../src/adapters/mongo/auth-rate-limit.js';
 import { ensureIndexes, assertDatabasePrepared } from '../../src/adapters/mongo/database.js';
 let rs, client, db, dataDir, server, worker;
 before(
@@ -25,8 +26,15 @@ before(
     server = createTestHarness({
       workers: [
         {
-          configPath: './wrangler.jsonc',
+          // Sin bindings ni namespaces DO: todas las pruebas deben pasar por el Worker directo.
+          configPath: './test/workers/fixtures/direct.wrangler.jsonc',
           vars: {
+            ...JSON.parse(
+              readFileSync(new URL('../../wrangler.jsonc', import.meta.url), 'utf8').replace(
+                /,\s*([}\]])/g,
+                '$1',
+              ),
+            ).vars,
             MONGO_DB: db.databaseName,
             MONGO_AUTO_MIGRATE: 'true',
             LOG_LEVEL: 'silent',
@@ -115,24 +123,8 @@ test('Workerd inicia el bundle, aplica CORS y rechaza JSON/cuerpos inválidos si
     deniedCors.headers.get('Access-Control-Allow-Origin'),
     'https://nexo.aethel.ing.evil.test',
   );
-
-  const invalid = await worker.fetch('https://api.example.com/api/v1/auth/register', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '192.0.2.11' },
-    body: '{',
-  });
-  assert.equal(invalid.status, 400);
-  const oversized = await call(
-    'POST',
-    '/api/v1/auth/register',
-    { notes: 'x'.repeat(270000) },
-    undefined,
-    undefined,
-    '192.0.2.11',
-  );
-  assert.equal(oversized.status, 413);
 });
-test('Workerd prepara una base nueva desde varios objetos sin borrar datos existentes', async () => {
+test('Worker directo prepara una base nueva desde solicitudes concurrentes sin borrar datos existentes', async () => {
   assert.equal((await db.listCollections().toArray()).length, 0);
   await db.collection('bootstrapSentinel').insertOne({ _id: 'existing', value: 'conservar' });
   const [ready, unauthorized] = await Promise.all([
@@ -149,10 +141,68 @@ test('Workerd prepara una base nueva desde varios objetos sin borrar datos exist
   const indexes = await db.collection('sessions').listIndexes().toArray();
   assert.ok(indexes.some((i) => i.key.expiresAt === 1 && i.expireAfterSeconds === 0));
 });
+test('Worker directo valida JSON y tamaño de cuerpos después de aplicar el límite de acceso', async () => {
+  const invalid = await worker.fetch('https://api.example.com/api/v1/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '192.0.2.11' },
+    body: '{',
+  });
+  assert.equal(invalid.status, 400);
+  const oversized = await call(
+    'POST',
+    '/api/v1/auth/register',
+    { notes: 'x'.repeat(270000) },
+    undefined,
+    undefined,
+    '192.0.2.11',
+  );
+  assert.equal(oversized.status, 413);
+});
 test('Workerd ejecuta scrypt, Bearer JWT, MongoDB, aislamiento y revocación', async () => {
   const f = await fixture();
   const me = await call('GET', '/api/v1/auth/me', undefined, f.token);
   assert.equal(me.status, 200, JSON.stringify(me.data));
+  const login = await call(
+    'POST',
+    '/api/v1/auth/login',
+    {
+      email: me.data.email,
+      password: 'UnaClaveLarga123!',
+    },
+    undefined,
+    undefined,
+    '192.0.2.75',
+  );
+  assert.equal(login.status, 200, JSON.stringify(login.data));
+  assert.equal(
+    (await call('GET', '/api/v1/auth/me', undefined, login.data.accessToken)).data._id,
+    me.data._id,
+  );
+  const wrong = await call(
+    'POST',
+    '/api/v1/auth/login',
+    {
+      email: me.data.email,
+      password: 'OtraClaveLarga123!',
+    },
+    undefined,
+    undefined,
+    '192.0.2.75',
+  );
+  assert.equal(wrong.status, 401);
+  const missing = await call(
+    'POST',
+    '/api/v1/auth/login',
+    {
+      email: 'missing@example.invalid',
+      password: 'OtraClaveLarga123!',
+    },
+    undefined,
+    undefined,
+    '192.0.2.75',
+  );
+  assert.equal(missing.status, 401);
+
   const stranger = await fixture();
   assert.equal((await call('GET', f.base + '/wallets', undefined, stranger.token)).status, 404);
   assert.equal((await call('POST', '/api/v1/auth/logout', undefined, f.token)).status, 200);
@@ -288,7 +338,7 @@ test('Workerd guarda y edita los campos de tarjeta sin alterar su cupo', async (
   assert.equal(updated.data.minimumPaymentMinor, 0);
   assert.equal(updated.data.limitMinor, 500000);
 });
-test('Durable Object limita login/registro antes de procesar credenciales', async () => {
+test('MongoDB limita login/registro antes de procesar credenciales', async () => {
   for (let i = 0; i < 15; i++) {
     const r = await worker.fetch('https://api.example.com/api/v1/auth/login', {
       method: 'POST',
@@ -303,6 +353,42 @@ test('Durable Object limita login/registro antes de procesar credenciales', asyn
   assert.equal(r.data.error.code, 'RATE_LIMIT');
 });
 
+test('Mongo limita intentos concurrentes entre invocaciones y conserva el contador', async () => {
+  const ip = '192.0.2.88';
+  const results = await Promise.all(
+    Array.from({ length: 20 }, () =>
+      call('POST', '/api/v1/auth/login', {}, undefined, undefined, ip),
+    ),
+  );
+  assert.equal(results.filter((r) => r.status === 422).length, 15);
+  assert.equal(results.filter((r) => r.status === 429).length, 5);
+  const records = await db.collection('authRateLimits').find({ count: 20 }).toArray();
+  assert.equal(records.length, 1);
+  assert.ok(records[0].expiresAt instanceof Date);
+  assert.ok(!JSON.stringify(records[0]).includes(ip));
+  assert.equal(
+    (await call('POST', '/api/v1/auth/register', {}, undefined, undefined, ip)).status,
+    429,
+  );
+  assert.equal(
+    (await call('POST', '/api/v1/auth/login', {}, undefined, undefined, '192.0.2.89')).status,
+    422,
+  );
+  const indexes = await db.collection('authRateLimits').listIndexes().toArray();
+  assert.ok(indexes.some((i) => i.key.expiresAt === 1 && i.expireAfterSeconds === 0));
+});
+test('El contador usa ventanas nuevas aunque Mongo todavía conserve la fila vencida', async () => {
+  const start = Math.floor(Date.now() / 900000) * 900000;
+  let time = start + 899999;
+  const consume = createMongoAuthLimiter(db, { now: () => time });
+  const request = new Request('https://api.example.com', {
+    headers: { 'CF-Connecting-IP': '192.0.2.87' },
+  });
+  assert.deepEqual(await consume(request), { count: 1, retryAfter: 1 });
+  assert.equal((await consume(request)).count, 2);
+  time++;
+  assert.deepEqual(await consume(request), { count: 1, retryAfter: 900 });
+});
 test('Workers exige índices de consistencia antes de operar una base nueva', async () => {
   const empty = client.db(db.databaseName + '_unprepared');
   await assert.rejects(assertDatabasePrepared(empty), { code: 'DATABASE_NOT_PREPARED' });

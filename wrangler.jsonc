@@ -8,6 +8,7 @@
   "routes": [{ "pattern": "api.nexo.aethel.ing", "custom_domain": true }],
   "vars": {
     "NODE_ENV": "production",
+    "API_RUNTIME": "direct",
     "MONGO_DB": "nexo",
     "MONGO_AUTO_MIGRATE": "true",
     "GOOGLE_CLIENT_ID": "259045388211-p4fk2jnqhm40t1tqa91da7ic1qbn76ak.apps.googleusercontent.com",

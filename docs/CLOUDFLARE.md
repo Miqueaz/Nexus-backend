@@ -4,23 +4,27 @@ El repositorio soporta dos entradas: `src/server.js` para Express en Node/Docker
 
 ## Arquitectura
 
-El Worker recibe la solicitud y la dirige a `BusinessApi`, un Durable Object. El objeto atiende HTTP mediante el adaptador Fetch/Hono y comparte la conexión MongoDB solo entre solicitudes que se solapan y la cierra al terminar la última. El pool usa máximo una conexión de operaciones por servidor, monitoreo por polling y conexión gradual para acotar el uso de sockets. No se ejecuta un servidor TCP/Express dentro de Workers. No se necesita reescribir las reglas de negocio.
+El modo predeterminado `API_RUNTIME=direct` atiende cada solicitud directamente en el Worker mediante Fetch/Hono. Cada invocación crea su propio MongoClient de forma diferida, lo reutiliza solo dentro de esa solicitud y espera su cierre en finally. No comparte sockets, Db ni Collection entre contextos Workers y no envía solicitudes a Durable Objects.
 
-Las rutas de identidad y listado/creación de negocios comparten un objeto `identity-v1`. Las rutas de cada negocio se distribuyen entre 16 objetos por el primer dígito de su UUID. Todos usan la misma base de datos; los permisos y filtros por negocio siguen comprobándose en MongoDB. Es partición de conexiones, no de datos. No cambies arbitrariamente estos nombres en producción: el contador de intentos de identidad reside en su almacenamiento.
+El pool tiene máximo una conexión de operaciones por servidor, monitoreo por polling y conexión gradual. Salud superficial, CORS y rutas que no necesitan servicios no abren MongoDB. Las rutas de negocio, tokens Bearer, sesiones, permisos, idempotencia, transacciones y auditoría conservan el mismo contrato que Express/Node.
 
-El cliente MongoDB se crea/importa dentro de una solicitud y se reutiliza mientras haya solicitudes activas en ese objeto. Al quedar inactivo se espera client.close(), se descarta el runtime y la siguiente solicitud abre una conexión nueva. El cierre espera a que terminen todas las solicitudes; no interrumpe transacciones concurrentes. No se mantienen timers ni sockets de MongoDB entre ráfagas de solicitudes. La inicialización fallida se puede reintentar; los errores de conexión producen 503 sin revelar el URI. Las conexiones pueden desaparecer al desalojarse el DO; no se asume que sean permanentes. No se devuelven objetos MongoClient/Db por RPC.
+Los contadores de acceso se guardan en `authRateLimits` de MongoDB. El identificador combina la ventana fija de 15 minutos y SHA-256 de la IP proporcionada por Cloudflare. Un findOneAndUpdate atómico con _id único incrementa el contador entre invocaciones y ubicaciones del Worker; un índice TTL sobre expiresAt limpia las ventanas vencidas. El vencimiento lógico depende de la ventana, no de que el limpiador TTL haya borrado una fila. Se mantienen los 15 intentos compartidos por IP entre los endpoints limitados y las respuestas 429/Retry-After. Una falla del contador impide continuar con la autenticación.
+
+La clase BusinessApi, su binding y la migración v1 se conservan para compatibilidad y reversión. En modo direct no se invocan, incluso si la cuota DO está agotada. No se borran sus datos SQLite; las ventanas anteriores expiran a los 15 minutos y los nuevos contadores comienzan en MongoDB al cambiar de modo. Solo `API_RUNTIME=durable-object` habilita explícitamente el adaptador anterior.
+
+El servicio de autenticación usa una comparación scrypt de igual costo para usuarios inexistentes, pero ya no calcula un hash adicional al preparar cada servicio. Las contraseñas existentes, sus parámetros criptográficos, las sesiones y las claves JWT permanecen compatibles.
 
 ## Requisitos
 
 - Node.js 24 y las dependencias de `npm ci` para compilar y administrar.
 - Cuenta de Cloudflare con Workers y Durable Objects habilitados.
-- Se usan los límites predeterminados de Cloudflare, sin configurar `limits.cpu_ms`, que puede impedir el despliegue en el plan gratuito. Los Durable Objects con SQLite están disponibles tanto en Workers Free como en Paid y tienen 30 segundos de CPU por solicitud de forma predeterminada. El Worker de entrada solo dirige las solicitudes; la autenticación y los servicios se ejecutan en el Durable Object. El hashing scrypt conserva su costo criptográfico. Revisa las cuotas y el rendimiento con tu carga real; no se ha validado un despliegue en una cuenta Free.
+- Se usan los límites predeterminados de Cloudflare, sin configurar `limits.cpu_ms`, que puede impedir el despliegue en el plan gratuito. Los Durable Objects con SQLite están disponibles tanto en Workers Free como en Paid y tienen 30 segundos de CPU por solicitud de forma predeterminada. En modo direct la autenticación y los servicios se ejecutan en el Worker normal, que en Free tiene 10 ms de CPU por solicitud. Hay que comprobar en producción el costo de scrypt y de las operaciones; las pruebas locales no reproducen el medidor de CPU del plan. Retirar los DO elimina su cuota de duración, pero no elimina los límites de Workers o Atlas. El hashing scrypt conserva su costo criptográfico. Revisa las cuotas y el rendimiento con tu carga real; no se ha validado un despliegue en una cuenta Free.
 - MongoDB Atlas o un replica set accesible desde Cloudflare, con TLS, usuario y permisos de lectura/escritura para la aplicación. Un MongoDB en localhost no es accesible desde un Worker desplegado.
 - Configurar las reglas de red de la base para permitir las conexiones desde tu despliegue. Workers no proporciona una IP de egreso fija por defecto; no confíes en la IP de tu computadora como permiso del servidor. Define la conectividad adecuada para tu entorno.
 
 ## Preparar MongoDB
 
-La configuración del repositorio incluye `vars.MONGO_AUTO_MIGRATE: "true"`. Al abrir su conexión, cada Durable Object comprueba los índices únicos críticos. Si faltan, crea las colecciones e índices con el mismo procedimiento idempotente de `db:migrate` y vuelve a validarlos antes de permitir operaciones. No borra documentos, colecciones ni índices existentes. Los objetos que ya encuentran la base preparada solo comprueban sus restricciones; no repiten la creación de índices.
+La configuración del repositorio incluye `vars.MONGO_AUTO_MIGRATE: "true"`. Al abrir su conexión, cada conexión comprueba los índices únicos críticos. Si faltan, crea las colecciones e índices con el mismo procedimiento idempotente de `db:migrate` y vuelve a validarlos antes de permitir operaciones. No borra documentos, colecciones ni índices existentes. Las conexiones que ya encuentran la base preparada solo comprueban sus restricciones; no repiten la creación de índices.
 
 Con esta opción basta configurar los secretos, desplegar y abrir `GET /health/ready` desde la app o el navegador. La primera consulta puede tardar más mientras prepara la base. El usuario MongoDB debe tener permisos para crear colecciones e índices. Si encuentra duplicados o una definición incompatible, el arranque falla y no comienza a servir operaciones sobre una base sin las restricciones requeridas.
 
@@ -48,7 +52,7 @@ Edita `wrangler.jsonc`:
 - `vars.MONGO_AUTO_MIGRATE`: `"true"` permite preparar una base nueva al conectarse; `"false"` exige la migración manual previa.
 - `vars.CORS_ORIGINS`: origen real del frontend, o varios separados por comas.
 - `vars.JWT_ISSUER` y `vars.JWT_AUDIENCE`: deben coincidir si quieres conservar la validez de tokens emitidos por otro despliegue.
-- Conserva `nodejs_compat`, la declaración de `BusinessApi` y su migración SQLite.
+- Conserva `nodejs_compat`. `vars.API_RUNTIME: "direct"` evita el uso de DO. La declaración histórica de `BusinessApi` y la migración SQLite se mantienen para una reversión sin borrar datos.
 
 Autentícate y registra los secretos desde tu terminal:
 
@@ -87,7 +91,7 @@ cp .dev.vars.example .dev.vars
 npm run workers:dev
 ```
 
-`.dev.vars` debe incluir un JWT_SECRET aleatorio válido, sin el texto REEMPLAZAR. Puedes usar el mismo del `.env` local. Wrangler emula el DO y su SQLite localmente. El Compose de MongoDB sigue siendo útil para Node y para el desarrollo local, pero no se ejecuta en la plataforma Workers.
+`.dev.vars` debe incluir un JWT_SECRET aleatorio válido, sin el texto REEMPLAZAR. Puedes usar el mismo del `.env` local. Wrangler ejecuta el Worker directo localmente; el binding DO histórico no se utiliza. El Compose de MongoDB sigue siendo útil para Node y para el desarrollo local, pero no se ejecuta en la plataforma Workers.
 
 Para verificar toda la aplicación:
 
@@ -98,14 +102,14 @@ npm run workers:build
 npm test
 ```
 
-La suite Workers usa el test harness oficial de Wrangler sobre `workerd` y un replica set MongoDB temporal. No necesita cuenta de Cloudflare ni secretos productivos. Si tu directorio temporal no soporta los archivos de Mongo, usa `TEST_TMP_ROOT=/ruta/compatible npm test`.
+La suite Workers usa el test harness oficial de Wrangler sobre `workerd`, sin bindings ni namespaces DO, y un replica set MongoDB temporal. No necesita cuenta de Cloudflare ni secretos productivos. Si tu directorio temporal no soporta los archivos de Mongo, usa `TEST_TMP_ROOT=/ruta/compatible npm test`.
 
 ## Seguridad, límites y observabilidad
 
 - Bearer JWT, scrypt, validación de permisos e historial son los mismos en ambos entornos.
 - El logger Workers emite JSON estructurado hacia Workers Logs. Redacta secretos y no registra cuerpos ni query strings. La auditoría de movimientos sigue escribiéndose en Mongo dentro de la misma transacción.
-- El límite de login/registro es de 15 intentos por IP por ventana fija de 15 minutos. Se persiste en SQLite del objeto de identidad, compartido entre ambos endpoints y conservado ante desalojos normales del DO. Las IP se almacenan como SHA-256, no en texto. Las filas expiradas se eliminan cuando llega el siguiente intento. El origen de IP es `CF-Connecting-IP`, proporcionado por Cloudflare; en Node se conserva el limitador Express.
-- El estado durable de SQLite solo contiene contadores de acceso. Los negocios, usuarios, sesiones, dinero, inventario y auditoría permanecen en MongoDB.
+- El límite de login/registro es de 15 intentos por IP por ventana fija de 15 minutos. En el Worker directo se persiste en authRateLimits de MongoDB, compartido entre invocaciones. Las IP se almacenan como SHA-256. TTL limpia las filas expiradas. El origen de IP es CF-Connecting-IP, proporcionado por Cloudflare; en Node se conserva el limitador Express.
+- En modo direct, tanto los contadores como los negocios, usuarios, sesiones, dinero, inventario y auditoría permanecen en MongoDB. El SQLite histórico queda inactivo.
 - Conserva las claves de idempotencia en los reintentos. Una desconexión no demuestra que una transacción haya fallado.
 - Las consultas de historial y calendarios que lean muchos datos deben evaluarse con volumen real. Las pruebas funcionales no sustituyen pruebas de carga, latencia de Atlas ni facturación.
 
@@ -116,10 +120,12 @@ El dominio de producción `api.nexo.aethel.ing` está declarado en `routes` como
 
 `CORS_ORIGINS` incluye `https://nexo.aethel.ing`. Configúralo como origen exacto sin la barra final de la URL. El preflight permite Authorization, Content-Type e Idempotency-Key. Si mantienes una variable equivalente en un entorno distinto o en una instalación Node, agrega allí el mismo origen.
 
-## Cuota de duración de Durable Objects Free
+## Cuota de duración y cambio al Worker directo
 
-`Exceeded allowed duration in Durable Objects free tier.` indica que se agotó la cuota diaria de duración, no que una consulta haya superado el timeout de MongoDB. Workers Free incluye 13,000 GB-s diarios de duración; la cuota se reinicia a las 00:00 UTC (17:00 en Tijuana durante horario de verano, 16:00 durante horario estándar). Volver a desplegar no restablece la cuota. Para recuperar el servicio antes del reinicio hace falta cambiar de plan desde la cuenta; el código no activa facturación.
+`Exceeded allowed duration in Durable Objects free tier.` indica que la cuenta agotó la cuota diaria de duración DO. El modo direct no invoca DO y permite atender solicitudes sin depender de esa cuota. No reinicia ni altera las cuotas consumidas, el plan ni la facturación.
 
-Una conexión TCP saliente abierta y los timers del monitor del driver impiden hibernar y consumen duración incluso sin tráfico. Por eso el adaptador cierra el cliente cuando acaba la última solicitud activa, incluidos errores. La API conserva permisos, sesiones, transacciones, auditoría e idempotencia en MongoDB y los contadores de acceso en SQLite. Los nombres de los DO y su migración no cambian. Esta corrección no garantiza permanecer dentro de todas las cuotas con cualquier tráfico. Abrir conexiones de nuevo también añade latencia a solicitudes aisladas; revisa duración, latencia y consumo con datos reales. Las pruebas locales comprueban cierre/reconexión TCP y concurrencia, pero no reproducen el medidor de facturación de Cloudflare.
+El adaptador histórico durable-object cierra sus conexiones al terminar las solicitudes activas para evitar gasto en reposo. Free incluye 13,000 GB-s diarios DO y se reinicia a las 00:00 UTC. Las conexiones salientes abiertas y timers impiden hibernar. Esas reglas siguen aplicando si se vuelve a habilitar el adaptador histórico.
 
-Referencias: [precios y reinicio diario](https://developers.cloudflare.com/durable-objects/platform/pricing/), [hibernación y conexiones salientes](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/).
+En modo direct hay que considerar otros límites: CPU, solicitudes y conexiones de Workers; operaciones y conexiones de Atlas. Abrir conexiones por solicitud añade latencia. No reduzcas el costo criptográfico para ocultar errores de CPU. Si una carga excede Free, se necesita un plan o entorno adecuado. El harness local comprueba funcionamiento, aislamiento, cierre de conexiones y concurrencia; no garantiza caber en cuotas productivas.
+
+Referencias: [conexión MongoDB directa](https://developers.cloudflare.com/workers/databases/third-party-integrations/mongodb/), [límites Workers](https://developers.cloudflare.com/workers/platform/limits/), [precios DO](https://developers.cloudflare.com/durable-objects/platform/pricing/), [hibernación](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/).

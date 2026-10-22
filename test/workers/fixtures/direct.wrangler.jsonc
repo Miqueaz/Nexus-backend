@@ -1,0 +1,6 @@
+{
+  "name": "nexo-direct-test",
+  "main": "../../../src/workers/index.js",
+  "compatibility_date": "2026-10-20",
+  "compatibility_flags": ["nodejs_compat"]
+}
