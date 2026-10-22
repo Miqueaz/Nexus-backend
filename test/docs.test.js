@@ -443,3 +443,76 @@ test('File uploads validate bytes and limits; metadata lists never contain file 
     revision: 1,
   }).expect(403);
 });
+
+test('Rich blocks preserve fonts, ink and image/board references while rejecting cross-business and malformed content', async () => {
+  const f = await fixture(),
+    other = await fixture();
+  const image = (
+    await call(f, 'post', '/docs/files', {
+      title: 'Imagen',
+      name: 'test.png',
+      data: Buffer.from('89504e470d0a1a0a00000000', 'hex').toString('base64'),
+    }).expect(201)
+  ).body;
+  const board = (await call(f, 'post', '/docs', { title: 'Ideas', kind: 'board' }).expect(201))
+    .body;
+  const content = {
+    title: 'Rich note',
+    kind: 'document',
+    font: 'serif',
+    blocks: [
+      { id: randomUUID(), type: 'paragraph', text: 'A mano', font: 'handwritten' },
+      { id: randomUUID(), type: 'image', attachmentId: image._id },
+      { id: randomUUID(), type: 'boardRef', boardId: board._id },
+      {
+        id: randomUUID(),
+        type: 'ink',
+        strokes: [
+          {
+            color: '#195a43',
+            width: 3,
+            points: [
+              [10, 10],
+              [40, 45],
+              [80, 20],
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  const row = (await call(f, 'post', '/docs', content).expect(201)).body;
+  assert.equal(row.font, 'serif');
+  assert.equal(row.blocks[0].font, 'handwritten');
+  assert.equal(row.blocks[3].strokes[0].points.length, 3);
+  const reload = (await call(f, 'get', '/docs/' + row._id)).body;
+  assert.deepEqual(reload.blocks, row.blocks);
+  await call(other, 'post', '/docs', content).expect(404);
+  await call(f, 'post', '/docs', {
+    ...content,
+    blocks: [{ id: randomUUID(), type: 'image', attachmentId: board._id }],
+  }).expect(422);
+  await call(f, 'post', '/docs', { ...content, font: 'javascript:alert(1)' }).expect(422);
+  await call(f, 'post', '/docs', {
+    ...content,
+    blocks: [
+      { id: randomUUID(), type: 'image', attachmentId: image._id, src: 'https://external.test/x' },
+    ],
+  }).expect(422);
+  await call(f, 'post', '/docs', {
+    ...content,
+    blocks: [
+      {
+        id: randomUUID(),
+        type: 'ink',
+        strokes: [{ color: '#195a43', width: 3, points: [[1001, 0]] }],
+      },
+    ],
+  }).expect(422);
+  await call(f, 'patch', '/docs/' + image._id, { revision: 1, archived: true }).expect(200);
+  await call(f, 'put', '/docs/' + row._id, {
+    ...update(row),
+    font: row.font,
+    title: 'References preserved',
+  }).expect(200);
+});

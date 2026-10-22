@@ -26,6 +26,39 @@ export function createDocsService({ commands, store }) {
     // Serializes child placement with concurrent container archival.
     await tx.update('documents', container._id, container.revision, {});
   }
+  async function references(tx, data) {
+    const seen = new Set();
+    const media = (data.blocks || []).filter((b) => ['image', 'boardRef'].includes(b.type));
+    ensure(
+      media.length <= 40,
+      422,
+      'DOC_MEDIA_LIMIT',
+      'Un documento admite hasta 40 imágenes y pizarrones vinculados',
+    );
+    for (const block of media) {
+      const key = block.attachmentId || block.boardId;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (block.type === 'image') {
+        const file = await tx.get('documents', block.attachmentId);
+        ensure(
+          file.kind === 'file' && file.attachment?.mime.startsWith('image/'),
+          422,
+          'DOC_IMAGE',
+          'Selecciona una imagen activa de este negocio',
+        );
+      }
+      if (block.type === 'boardRef') {
+        const board = await tx.get('documents', block.boardId);
+        ensure(
+          board.kind === 'board',
+          422,
+          'DOC_BOARD_REF',
+          'Selecciona un pizarrón activo de este negocio',
+        );
+      }
+    }
+  }
   return {
     library(ctx, query) {
       const data = listDocsSchema.parse(query);
@@ -109,6 +142,7 @@ export function createDocsService({ commands, store }) {
     create(ctx, input) {
       const data = createDocSchema.parse(input);
       return commands.run(ctx, 'docs.created', data, async (tx) => {
+        await references(tx, data);
         await parent(tx, data.parentId, data.kind);
         return tx.insert('documents', {
           ...data,
@@ -123,6 +157,7 @@ export function createDocsService({ commands, store }) {
       const data = updateDocSchema.parse(input);
       return commands.run(ctx, 'docs.updated', { documentId, ...data }, async (tx) => {
         const current = await tx.get('documents', documentId);
+        await references(tx, data);
         ensure(!current.archived, 409, 'DOC_ARCHIVED', 'Restaura la nota antes de editarla');
         ensure(
           ['document', 'board'].includes(current.kind) && current.kind === data.kind,

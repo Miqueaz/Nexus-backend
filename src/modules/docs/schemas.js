@@ -3,22 +3,58 @@ import { z, id, revision } from '../../core/validation.js';
 
 const color = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 const coordinate = z.number().finite().min(-50000).max(50000);
-export const blockSchema = z.strictObject({
-  id,
-  type: z.enum([
-    'paragraph',
-    'heading1',
-    'heading2',
-    'bullet',
-    'numbered',
-    'todo',
-    'quote',
-    'code',
-    'divider',
-  ]),
-  text: z.string().max(12000).default(''),
-  checked: z.boolean().default(false),
-});
+export const blockSchema = z
+  .strictObject({
+    id,
+    type: z.enum([
+      'paragraph',
+      'heading1',
+      'heading2',
+      'bullet',
+      'numbered',
+      'todo',
+      'quote',
+      'code',
+      'divider',
+      'image',
+      'boardRef',
+      'ink',
+    ]),
+    text: z.string().max(12000).default(''),
+    checked: z.boolean().default(false),
+    font: z.enum(['sans', 'serif', 'handwritten', 'mono']).optional(),
+    attachmentId: id.optional(),
+    boardId: id.optional(),
+    strokes: z
+      .array(
+        z.strictObject({
+          color,
+          width: z.number().finite().min(1).max(12),
+          points: z
+            .array(
+              z.tuple([z.number().finite().min(0).max(1000), z.number().finite().min(0).max(500)]),
+            )
+            .min(1)
+            .max(2000),
+        }),
+      )
+      .max(160)
+      .optional(),
+  })
+  .superRefine((b, ctx) => {
+    const invalid =
+      b.type === 'image'
+        ? !b.attachmentId || b.boardId || b.strokes
+        : b.type === 'boardRef'
+          ? !b.boardId || b.attachmentId || b.strokes
+          : b.type === 'ink'
+            ? !b.strokes ||
+              b.attachmentId ||
+              b.boardId ||
+              b.strokes.reduce((n, s) => n + s.points.length, 0) > 12000
+            : b.attachmentId || b.boardId || b.strokes;
+    if (invalid) ctx.addIssue({ code: 'custom', message: 'Contenido de bloque no válido' });
+  });
 export const elementSchema = z.strictObject({
   id,
   type: z.enum(['rectangle', 'ellipse', 'diamond', 'arrow', 'text', 'pen']),
@@ -38,6 +74,7 @@ export const elementSchema = z.strictObject({
 const uniqueIds = (rows) => new Set(rows.map((r) => r.id)).size === rows.length;
 const body = {
   title: z.string().trim().min(1).max(200),
+  font: z.enum(['sans', 'serif', 'handwritten', 'mono']).optional(),
   parentId: id.nullable().optional(),
   board: boardSchema.nullable().optional(),
   kind: z.enum(['document', 'board']),
