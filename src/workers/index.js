@@ -6,36 +6,32 @@ import { createContainer } from '../container.js';
 import { createFetchApp } from '../http/fetch-app.js';
 import { createAuthLimiter } from './rate-limit.js';
 import { AppError } from '../core/errors.js';
+import { RequestRuntime } from './request-runtime.js';
 
-/** El runtime vive en el DO; MongoClient nunca se comparte entre contextos Worker. */
+/** MongoClient vive solo durante solicitudes activas del mismo DO. */
 export class BusinessApi extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
-    this.runtimePromise = null;
+    this.runtimeScope = null;
     this.app = null;
   }
   async runtime(config, logger) {
-    if (!this.runtimePromise) {
-      this.runtimePromise = (async () => {
-        const connection = await connectDatabase(config, {
-          initializeIndexes: false,
-          migrateIfNeeded: config.mongoAutoMigrate,
-          poolSize: 1,
-          monitoringMode: 'poll',
-        });
-        try {
-          const services = await createContainer({ ...connection, config, logger });
-          return { ...connection, services };
-        } catch (error) {
-          await connection.client.close();
-          throw error;
-        }
-      })();
-    }
     try {
-      return await this.runtimePromise;
+      const connection = await connectDatabase(config, {
+        initializeIndexes: false,
+        migrateIfNeeded: config.mongoAutoMigrate,
+        poolSize: 1,
+        monitoringMode: 'poll',
+        appName: 'nexo-workers',
+      });
+      try {
+        const services = await createContainer({ ...connection, config, logger });
+        return { ...connection, services };
+      } catch (error) {
+        await connection.client.close();
+        throw error;
+      }
     } catch (error) {
-      this.runtimePromise = null;
       logger.error({ errorType: error.name }, 'worker.database.unavailable');
       if (error instanceof AppError) throw error;
       throw new AppError(503, 'DATABASE_UNAVAILABLE', 'Base de datos no disponible');
@@ -58,14 +54,20 @@ export class BusinessApi extends DurableObject {
         );
       }
       const logger = createWorkerLogger(config.logLevel);
+      this.runtimeScope = new RequestRuntime({
+        open: () => this.runtime(config, logger),
+        close: ({ client }) => client.close(),
+        onCloseError: (error) =>
+          logger.error({ errorType: error.name }, 'worker.database.close_failed'),
+      });
       this.app = createFetchApp({
         config,
         logger,
-        getRuntime: () => this.runtime(config, logger),
+        getRuntime: () => this.runtimeScope.get(),
         consumeAuthLimit: createAuthLimiter(this.ctx.storage),
       });
     }
-    return this.app.fetch(request);
+    return this.runtimeScope.run(() => this.app.fetch(request));
   }
 }
 

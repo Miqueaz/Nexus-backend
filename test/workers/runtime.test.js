@@ -158,6 +158,42 @@ test('Workerd ejecuta scrypt, Bearer JWT, MongoDB, aislamiento y revocación', a
   assert.equal((await call('POST', '/api/v1/auth/logout', undefined, f.token)).status, 200);
   assert.equal((await call('GET', '/api/v1/auth/me', undefined, f.token)).status, 401);
 });
+test('Workerd libera conexiones Mongo en reposo y reconecta en la siguiente solicitud', async () => {
+  const connections = async () => {
+    const rows = await client
+      .db('admin')
+      .aggregate([
+        { $currentOp: { allUsers: true, idleConnections: true } },
+        { $match: { 'clientMetadata.application.name': 'nexo-workers' } },
+        { $count: 'count' },
+      ])
+      .toArray();
+    return rows[0]?.count ?? 0;
+  };
+  assert.equal(await connections(), 0);
+  for (let i = 0; i < 2; i++) {
+    let finished = false,
+      sawConnection = false;
+    const request = call('GET', '/health/ready').finally(() => {
+      finished = true;
+    });
+    while (!finished) {
+      sawConnection ||= (await connections()) > 0;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const ready = await request;
+    assert.equal(ready.status, 200, JSON.stringify(ready.data));
+    assert.ok(sawConnection, 'se observó la conexión TCP del Worker en Mongo');
+    // El servidor puede procesar el FIN después de que close() resuelva en workerd.
+    let current;
+    for (let retry = 0; retry < 50; retry++) {
+      current = await connections();
+      if (!current) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(current, 0, 'no quedan conexiones del Worker en reposo');
+  }
+});
 test('Worker mantiene ventas, idempotencia, rollback, historial y auditoría atómicos', async () => {
   const f = await fixture();
   const w = await call(

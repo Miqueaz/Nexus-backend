@@ -4,11 +4,11 @@ El repositorio soporta dos entradas: `src/server.js` para Express en Node/Docker
 
 ## Arquitectura
 
-El Worker recibe la solicitud y la dirige a `BusinessApi`, un Durable Object. El objeto atiende HTTP mediante el adaptador Fetch/Hono y conserva la conexión MongoDB durante su vida. El pool usa máximo una conexión de operaciones por servidor, monitoreo por polling y conexión gradual para acotar el uso de sockets. No se ejecuta un servidor TCP/Express dentro de Workers. No se necesita reescribir las reglas de negocio.
+El Worker recibe la solicitud y la dirige a `BusinessApi`, un Durable Object. El objeto atiende HTTP mediante el adaptador Fetch/Hono y comparte la conexión MongoDB solo entre solicitudes que se solapan y la cierra al terminar la última. El pool usa máximo una conexión de operaciones por servidor, monitoreo por polling y conexión gradual para acotar el uso de sockets. No se ejecuta un servidor TCP/Express dentro de Workers. No se necesita reescribir las reglas de negocio.
 
 Las rutas de identidad y listado/creación de negocios comparten un objeto `identity-v1`. Las rutas de cada negocio se distribuyen entre 16 objetos por el primer dígito de su UUID. Todos usan la misma base de datos; los permisos y filtros por negocio siguen comprobándose en MongoDB. Es partición de conexiones, no de datos. No cambies arbitrariamente estos nombres en producción: el contador de intentos de identidad reside en su almacenamiento.
 
-El cliente MongoDB se crea/importa dentro de la primera solicitud y se reutiliza en el objeto. La inicialización fallida se puede reintentar; los errores de conexión producen 503 sin revelar el URI. Las conexiones pueden desaparecer al desalojarse el DO; no se asume que sean permanentes. No se devuelven objetos MongoClient/Db por RPC.
+El cliente MongoDB se crea/importa dentro de una solicitud y se reutiliza mientras haya solicitudes activas en ese objeto. Al quedar inactivo se espera client.close(), se descarta el runtime y la siguiente solicitud abre una conexión nueva. El cierre espera a que terminen todas las solicitudes; no interrumpe transacciones concurrentes. No se mantienen timers ni sockets de MongoDB entre ráfagas de solicitudes. La inicialización fallida se puede reintentar; los errores de conexión producen 503 sin revelar el URI. Las conexiones pueden desaparecer al desalojarse el DO; no se asume que sean permanentes. No se devuelven objetos MongoClient/Db por RPC.
 
 ## Requisitos
 
@@ -115,3 +115,11 @@ Referencias oficiales: [MongoDB en Workers](https://developers.cloudflare.com/wo
 El dominio de producción `api.nexo.aethel.ing` está declarado en `routes` como `custom_domain: true`; Wrangler lo enlaza al mismo Worker al desplegar en la cuenta que administra la zona `aethel.ing`. `workers_dev` sigue habilitado para conservar el alias existente. Los clientes usan `https://api.nexo.aethel.ing`; CORS debe contener el origen de la web, no la URL de la API. Los secretos y la base MongoDB no cambian por este cambio de dominio.
 
 `CORS_ORIGINS` incluye `https://nexo.aethel.ing`. Configúralo como origen exacto sin la barra final de la URL. El preflight permite Authorization, Content-Type e Idempotency-Key. Si mantienes una variable equivalente en un entorno distinto o en una instalación Node, agrega allí el mismo origen.
+
+## Cuota de duración de Durable Objects Free
+
+`Exceeded allowed duration in Durable Objects free tier.` indica que se agotó la cuota diaria de duración, no que una consulta haya superado el timeout de MongoDB. Workers Free incluye 13,000 GB-s diarios de duración; la cuota se reinicia a las 00:00 UTC (17:00 en Tijuana durante horario de verano, 16:00 durante horario estándar). Volver a desplegar no restablece la cuota. Para recuperar el servicio antes del reinicio hace falta cambiar de plan desde la cuenta; el código no activa facturación.
+
+Una conexión TCP saliente abierta y los timers del monitor del driver impiden hibernar y consumen duración incluso sin tráfico. Por eso el adaptador cierra el cliente cuando acaba la última solicitud activa, incluidos errores. La API conserva permisos, sesiones, transacciones, auditoría e idempotencia en MongoDB y los contadores de acceso en SQLite. Los nombres de los DO y su migración no cambian. Esta corrección no garantiza permanecer dentro de todas las cuotas con cualquier tráfico. Abrir conexiones de nuevo también añade latencia a solicitudes aisladas; revisa duración, latencia y consumo con datos reales. Las pruebas locales comprueban cierre/reconexión TCP y concurrencia, pero no reproducen el medidor de facturación de Cloudflare.
+
+Referencias: [precios y reinicio diario](https://developers.cloudflare.com/durable-objects/platform/pricing/), [hibernación y conexiones salientes](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/).

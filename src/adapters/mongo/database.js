@@ -27,11 +27,13 @@ export async function connectDatabase(
     migrateIfNeeded = false,
     poolSize = 20,
     monitoringMode = 'auto',
+    appName = 'nexo-backend',
   } = {},
 ) {
   // El driver genera valores aleatorios al importarse: cargarlo dentro de una solicitud Workers.
   const { MongoClient } = await import('mongodb');
   const client = new MongoClient(config.mongoUri, {
+    appName,
     serverSelectionTimeoutMS: 10000,
     maxPoolSize: poolSize,
     maxConnecting: 1,
