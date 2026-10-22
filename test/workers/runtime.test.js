@@ -673,6 +673,9 @@ test('Workerd guarda preferencias personales, sirve snapshot y rechaza configura
       {
         id: randomUUID(),
         title: 'Mi crédito',
+        columns: 12,
+        height: 400,
+        color: '#8262a5',
         type: 'metric',
         preset: 'debt',
         accounts: [],

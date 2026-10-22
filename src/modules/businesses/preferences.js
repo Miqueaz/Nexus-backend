@@ -37,6 +37,13 @@ export const widgetSchema = z
     category: z.string().trim().max(200),
     limit: z.number().int().min(3).max(50),
     size: z.enum(['normal', 'wide']),
+    columns: z.number().int().min(3).max(12).optional(),
+    height: z.number().int().min(220).max(1200).optional(),
+    color: z
+      .string()
+      .regex(/^#[0-9a-fA-F]{6}$/)
+      .transform((value) => value.toLowerCase())
+      .optional(),
   })
   .refine(
     (w) => w.periodMode !== 'custom' || (w.from && w.to && w.from <= w.to),

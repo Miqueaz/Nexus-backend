@@ -1360,6 +1360,9 @@ test('Personalización por usuario y negocio: viewer, conflictos, auditoría y f
   const widget = {
     id: randomUUID(),
     title: 'Compras de la tarjeta',
+    columns: 12,
+    height: 400,
+    color: '#8262a5',
     type: 'chart',
     preset: 'creditPurchases',
     accounts: [],
@@ -1408,6 +1411,14 @@ test('Personalización por usuario y negocio: viewer, conflictos, auditoría y f
     { ...preferences, widgets: [widget, widget] },
     { ...preferences, widgets: [{ ...widget, to: '2026-09-01' }] },
     { ...preferences, widgets: [{ ...widget, preset: 'sql' }] },
+    ...[
+      { columns: 13 },
+      { columns: 3.5 },
+      { height: 219 },
+      { height: 1201 },
+      { color: '#fff' },
+      { color: 'red;display:none' },
+    ].map((change) => ({ ...preferences, widgets: [{ ...widget, ...change }] })),
     { ...preferences, userId: outsider.id },
     {
       ...preferences,
