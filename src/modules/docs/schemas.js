@@ -1,3 +1,4 @@
+import { boardSchema } from './board-schema.js';
 import { z, id, revision } from '../../core/validation.js';
 
 const color = z.string().regex(/^#[0-9a-fA-F]{6}$/);
@@ -37,6 +38,7 @@ export const elementSchema = z.strictObject({
 const uniqueIds = (rows) => new Set(rows.map((r) => r.id)).size === rows.length;
 const body = {
   title: z.string().trim().min(1).max(200),
+  board: boardSchema.nullable().optional(),
   kind: z.enum(['document', 'board']),
   color: color.default('#164e3d'),
   blocks: z.array(blockSchema).max(300).default([]).refine(uniqueIds, 'IDs de bloques repetidos'),
@@ -47,13 +49,16 @@ const body = {
     .refine(uniqueIds, 'IDs de elementos repetidos'),
 };
 const validContent = (d) =>
-  d.kind === 'document' ? d.elements.length === 0 : d.blocks.length === 0;
-const contentSize = (d) => new TextEncoder().encode(JSON.stringify(d)).length <= 220 * 1024;
+  d.kind === 'document'
+    ? d.elements.length === 0 && !d.board
+    : d.blocks.length === 0 && (!d.board || d.elements.length === 0);
+const contentSize = (d) =>
+  new TextEncoder().encode(JSON.stringify(d)).length <= (d.board ? 6 * 1024 * 1024 : 220 * 1024);
 const pointCount = (d) => d.elements.reduce((n, e) => n + e.points.length, 0) <= 6000;
 const constrain = (schema) =>
   schema
     .refine(validContent, 'Un documento usa bloques; un pizarrón usa elementos')
-    .refine(contentSize, 'El documento supera el límite de 220 KB')
+    .refine(contentSize, 'La nota supera el límite permitido de contenido')
     .refine(pointCount, 'El pizarrón admite hasta 6000 puntos de trazo');
 export const createDocSchema = constrain(z.strictObject(body));
 export const updateDocSchema = constrain(z.strictObject({ ...body, revision }));

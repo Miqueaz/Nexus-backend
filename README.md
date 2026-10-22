@@ -151,6 +151,13 @@ Rutas bajo `/api/v1/businesses/:businessId`:
 - `PUT /docs/:id`: contenido completo más `revision`; requiere `Idempotency-Key`.
 - `PATCH /docs/:id`: `{archived, revision}`; requiere `Idempotency-Key`.
 
-Los bloques son texto estructurado, títulos, listas, tareas, cita, código o separador. Los pizarrones almacenan figuras, flechas, texto y puntos de pluma; no HTML, scripts ni imágenes externas. Los esquemas restringen geometría, colores, puntos, IDs únicos y 220 KB de contenido. Una revisión obsoleta devuelve 409 y nunca reemplaza silenciosamente la nota. Cada escritura usa la misma transacción y auditoría de los demás módulos. El tipo de nota es inmutable.
+Los bloques son texto estructurado, títulos, listas, tareas, cita, código o separador. Los pizarrones almacenan figuras, flechas, texto y puntos de pluma; no HTML, scripts ni imágenes externas. Los esquemas restringen geometría, colores, puntos e IDs únicos. Los documentos y pizarrones anteriores mantienen su límite de 220 KB; las escenas nativas de Excalidraw admiten hasta 5 MB, con un límite HTTP de 6 MB exclusivo de `/docs`. Los demás módulos conservan 256 KB. Una revisión obsoleta devuelve 409 y nunca reemplaza silenciosamente la nota. Cada escritura usa la misma transacción y auditoría de los demás módulos. El tipo de nota es inmutable.
 
 La migración agrega `documents` y sus índices sin eliminar datos. Workers con `MONGO_AUTO_MIGRATE=true` prepara el índice al detectar que falta; instalaciones con migración manual ejecutan `npm run db:migrate` antes de desplegar. Las pruebas Node, Workerd y web usan MongoDB temporal, sin escrituras de prueba en producción.
+
+
+### Escenas de Excalidraw en Docs
+
+Los pizarrones admiten el campo opcional `board: {format: "excalidraw", version: 2, elements, appState, files, libraryItems}`. Si existe, `elements` del formato anterior se envía vacío y `blocks` permanece vacío. Documentos de texto no admiten `board`. El límite es 2000 elementos de escena, 100 entradas de biblioteca, 50,000 puntos y 5 MB en total. Los IDs nativos no son UUID y se validan por separado. Solo se conserva el estado visual persistente; cámara, selección y herramientas no generan escrituras.
+
+`board-schema.js` valida el contrato 0.18.1: geometría, grupos, vinculaciones de flechas/texto, presión y archivos raster. Rechaza HTML, iframes, enlaces ejecutables y colores con URLs. La lista de notas omite `board`, `elements` y `blocks`; las imágenes solo se devuelven al consultar la nota autorizada. La conversión de los dibujos anteriores ocurre en el adaptador web y la auditoría mantiene el formato previo. El esquema anterior sigue disponible para clientes y notas existentes.

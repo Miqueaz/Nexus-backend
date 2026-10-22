@@ -758,3 +758,32 @@ test('Workerd guarda documentos y trazos con Bearer, revisiones y metadatos livi
   assert.equal(r.data.data.length, 0);
   assert.equal((await call('GET', f.base + '/docs/' + created._id)).status, 401);
 });
+
+test('Workerd persists official Excalidraw scenes above 256KB only on Docs routes', async () => {
+  const f = await fixture();
+  const scene = JSON.parse(
+    readFileSync(new URL('../fixtures/excalidraw-scene.json', import.meta.url), 'utf8'),
+  );
+  const text = scene.elements.find((e) => e.type === 'text');
+  const large = {
+    ...scene,
+    elements: Array.from({ length: 10 }, () => ({
+      ...text,
+      id: randomUUID(),
+      containerId: null,
+      text: 'x'.repeat(20000),
+      originalText: 'x'.repeat(20000),
+    })),
+  };
+  const body = { title: 'Official scene', kind: 'board', board: large };
+  assert.ok(JSON.stringify(body).length > 256 * 1024);
+  const r = await call('POST', f.base + '/docs', body, f.token, randomUUID());
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  assert.equal(r.data.board.elements.length, 10);
+  const listing = await call('GET', f.base + '/docs', undefined, f.token);
+  assert.equal(listing.data.data[0].board, undefined);
+  const unauthorized = await call('GET', f.base + '/docs/' + r.data._id);
+  assert.equal(unauthorized.status, 401);
+  const tooLarge = await call('POST', f.base + '/movements', body, f.token, randomUUID());
+  assert.equal(tooLarge.status, 413);
+});

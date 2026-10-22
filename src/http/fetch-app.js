@@ -39,14 +39,15 @@ export function createFetchApp({ getRuntime, config, logger, consumeAuthLimit })
       credentials: false,
     }),
   );
-  app.use(
-    '*',
+  app.use('*', async (c, next) =>
     bodyLimit({
-      maxSize: 256 * 1024,
+      maxSize: /^\/api\/v1\/businesses\/[^/]+\/docs(?:\/|$)/.test(c.req.path)
+        ? 6 * 1024 * 1024
+        : 256 * 1024,
       onError: () => {
         throw new AppError(413, 'BODY_TOO_LARGE', 'Solicitud demasiado grande');
       },
-    }),
+    })(c, next),
   );
   app.get('/health/live', (c) => c.json({ status: 'ok' }));
   app.get('/health/ready', async (c) => {

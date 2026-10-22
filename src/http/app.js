@@ -37,6 +37,7 @@ export function createApp({ services: s, config, logger, db }) {
       exposedHeaders: ['X-Request-Id'],
     }),
   );
+  app.use('/api/v1/businesses/:businessId/docs', express.json({ limit: '6mb', strict: true }));
   app.use(express.json({ limit: '256kb', strict: true }));
   const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,

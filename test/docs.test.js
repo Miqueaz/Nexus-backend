@@ -225,3 +225,115 @@ test('Docs migration is additive and preparation detects an absent collection in
     await isolated.dropDatabase();
   }
 });
+
+test('Official Excalidraw scenes preserve native IDs, bound text and pressure without changing finances', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const scene = JSON.parse(
+    await readFile(new URL('./fixtures/excalidraw-scene.json', import.meta.url), 'utf8'),
+  );
+  const f = await fixture();
+  const legacy = (
+    await call(f, 'post', '/docs', {
+      title: 'Migrated board',
+      kind: 'board',
+      elements: [{ id: randomUUID(), type: 'rectangle', x: 1, y: 2, width: 100, height: 80 }],
+    }).expect(201)
+  ).body;
+  const migrated = (
+    await call(f, 'put', '/docs/' + legacy._id, {
+      ...update(legacy),
+      elements: [],
+      board: scene,
+    }).expect(200)
+  ).body;
+  assert.equal(migrated.board.format, 'excalidraw');
+  assert.equal(migrated.elements.length, 0);
+  assert.deepEqual(
+    migrated.board.elements.map((e) => e.id),
+    scene.elements.map((e) => e.id),
+  );
+  assert.ok(migrated.board.elements.some((e) => e.type === 'freedraw'));
+  assert.ok(migrated.board.elements.some((e) => e.type === 'text' && e.containerId));
+  const listing = (await call(f, 'get', '/docs').expect(200)).body.data[0];
+  assert.equal(listing.board, undefined);
+  const detail = (await call(f, 'get', '/docs/' + legacy._id).expect(200)).body;
+  assert.deepEqual(detail.board.elements, scene.elements);
+  const before = await db
+    .collection('audit')
+    .findOne({ entityId: legacy._id, 'after.revision': 2 });
+  assert.equal(before.before.elements.length, 1);
+  assert.equal(await db.collection('movements').countDocuments({ businessId: f.business._id }), 0);
+  await call(f, 'put', '/docs/' + legacy._id, {
+    ...update(detail),
+    board: scene,
+    revision: 1,
+  }).expect(409);
+});
+
+test('Native scene validation rejects executable embeds/links and accepts bounded raster data', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const scene = JSON.parse(
+    await readFile(new URL('./fixtures/excalidraw-scene.json', import.meta.url), 'utf8'),
+  );
+  const input = { title: 'Native', kind: 'board', board: scene };
+  assert.equal(createDocSchema.safeParse(input).success, true);
+  for (const patch of [
+    { type: 'iframe' },
+    { link: 'javascript:alert(1)' },
+    { strokeColor: 'url(https://evil.test)' },
+    { x: Infinity },
+    { customData: { html: '<script/>' } },
+  ]) {
+    assert.equal(
+      createDocSchema.safeParse({
+        ...input,
+        board: { ...scene, elements: [{ ...scene.elements[0], ...patch }] },
+      }).success,
+      false,
+    );
+  }
+  const fileId = 'test_image',
+    image = {
+      ...scene.elements[0],
+      type: 'image',
+      id: 'native-image',
+      fileId,
+      status: 'saved',
+      scale: [1, 1],
+      crop: null,
+      boundElements: null,
+    };
+  const files = {
+    [fileId]: {
+      id: fileId,
+      mimeType: 'image/png',
+      dataURL: 'data:image/png;base64,iVBORw0KGgo=',
+      created: 1,
+    },
+  };
+  assert.equal(
+    createDocSchema.safeParse({ ...input, board: { ...scene, elements: [image], files } }).success,
+    true,
+  );
+  assert.equal(
+    createDocSchema.safeParse({
+      ...input,
+      board: {
+        ...scene,
+        elements: [image],
+        files: {
+          [fileId]: {
+            ...files[fileId],
+            mimeType: 'image/svg+xml',
+            dataURL: 'data:image/svg+xml;base64,PHN2Zz4=',
+          },
+        },
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    createDocSchema.safeParse({ title: 'Document', kind: 'document', board: scene }).success,
+    false,
+  );
+});

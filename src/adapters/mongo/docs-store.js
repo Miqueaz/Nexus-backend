@@ -16,7 +16,7 @@ export function createDocsStore(db) {
         .collection('documents')
         .find(filter, {
           session: tx.session,
-          projection: { blocks: 0, elements: 0 },
+          projection: { blocks: 0, elements: 0, board: 0 },
         })
         .sort({ updatedAt: -1, _id: -1 })
         .limit(limit + 1)
