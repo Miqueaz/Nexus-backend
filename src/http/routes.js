@@ -48,6 +48,15 @@ export function createRoutes(s) {
   read('/', (r) => s.businesses.get(r.context));
   write('patch', '/', (r) => s.businesses.update(r.context, r.body));
   write('put', '/preferences', (r) => s.businesses.savePreferences(r.context, r.body));
+  read('/docs', (r) => s.docs.list(r.context, r.query));
+  read('/docs/:id', (r) => s.docs.get(r.context, r.params.id));
+  write('post', '/docs', (r) => s.docs.create(r.context, r.body), financial);
+  write('put', '/docs/:id', (r) => s.docs.update(r.context, r.params.id, r.body), {
+    idempotent: true,
+  });
+  write('patch', '/docs/:id', (r) => s.docs.archive(r.context, r.params.id, r.body), {
+    idempotent: true,
+  });
   read('/members', (r) => s.businesses.members(r.context));
   write('post', '/members', (r) => s.businesses.addMember(r.context, r.body), create);
   write('patch', '/members/:memberId', (r) =>

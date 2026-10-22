@@ -2,6 +2,7 @@ import { assertModuleEnabled } from '../../modules/businesses/settings.js';
 
 // Centraliza el contrato de módulos sin conectar directamente los servicios.
 const actions = {
+  docs: 'docs',
   wallet: 'finance',
   finance: 'finance',
   creditLine: 'finance',

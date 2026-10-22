@@ -138,3 +138,19 @@ Las cuentas y líneas admiten edición y eliminación lógica solo sin saldo ni 
 
 
 El módulo de negocios permite crear negocios o espacios de trabajo con descripción, color y selección de módulos. Solo su propietario puede editar estos datos. Las herramientas desactivadas conservan registros y bloquean nuevas escrituras mediante el adaptador de acceso a módulos; `GET /business-modules` ofrece el catálogo. Dominio de producción: `https://api.nexo.aethel.ing/api/v1`.
+
+## Docs
+
+El módulo `docs` agrega documentos por bloques y pizarrones vectoriales. Se activa por negocio en `enabledModules`. Solo propietarios y editores pueden crear, editar, archivar o restaurar; lectores pueden consultar. Al desactivarlo se conserva la información y se bloquean escrituras nuevas. Los espacios nuevos lo incluyen por defecto; los existentes con módulos explícitos deben activarlo desde su configuración.
+
+Rutas bajo `/api/v1/businesses/:businessId`:
+
+- `GET /docs?limit=30&cursor=UUID&kind=document|board&archived=false&q=título`: metadatos paginados, sin bloques ni trazos.
+- `GET /docs/:id`: contenido de una nota del negocio autorizado.
+- `POST /docs`: `{title, kind, color, blocks, elements}`; requiere `Idempotency-Key`.
+- `PUT /docs/:id`: contenido completo más `revision`; requiere `Idempotency-Key`.
+- `PATCH /docs/:id`: `{archived, revision}`; requiere `Idempotency-Key`.
+
+Los bloques son texto estructurado, títulos, listas, tareas, cita, código o separador. Los pizarrones almacenan figuras, flechas, texto y puntos de pluma; no HTML, scripts ni imágenes externas. Los esquemas restringen geometría, colores, puntos, IDs únicos y 220 KB de contenido. Una revisión obsoleta devuelve 409 y nunca reemplaza silenciosamente la nota. Cada escritura usa la misma transacción y auditoría de los demás módulos. El tipo de nota es inmutable.
+
+La migración agrega `documents` y sus índices sin eliminar datos. Workers con `MONGO_AUTO_MIGRATE=true` prepara el índice al detectar que falta; instalaciones con migración manual ejecutan `npm run db:migrate` antes de desplegar. Las pruebas Node, Workerd y web usan MongoDB temporal, sin escrituras de prueba en producción.

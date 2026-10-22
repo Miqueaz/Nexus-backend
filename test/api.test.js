@@ -806,7 +806,7 @@ test('Espacios guardan identidad y módulos; solo el propietario puede administr
   const original = (await call(f, 'get', '').expect(200)).body;
   assert.equal(original.role, 'owner');
   assert.equal(original.color, '#164e3d');
-  assert.equal(original.enabledModules.length, 9);
+  assert.equal(original.enabledModules.length, 10);
   const editor = await user(),
     viewer = await user(),
     other = await fixture();
@@ -929,12 +929,13 @@ test('Identidad y dependencias se validan, y negocios antiguos conservan todos l
       { _id: f.business._id },
       { $unset: { color: '', enabledModules: '', kind: '', description: '' } },
     );
-  assert.equal((await call(f, 'get', '').expect(200)).body.enabledModules.length, 9);
+  assert.equal((await call(f, 'get', '').expect(200)).body.enabledModules.length, 10);
   await call(f, 'post', '/projects', { name: 'Compatible' }).expect(201);
   const catalog = (
     await request(app).get('/api/v1/business-modules').auth(f.token, { type: 'bearer' }).expect(200)
   ).body.data;
-  assert.equal(catalog.length, 9);
+  assert.equal(catalog.length, 10);
+  assert.ok(catalog.some((module) => module.id === 'docs'));
   assert.deepEqual(catalog.find((m) => m.id === 'sales').requires, ['finance', 'inventory']);
   await request(app).get('/api/v1/business-modules').expect(401);
 });

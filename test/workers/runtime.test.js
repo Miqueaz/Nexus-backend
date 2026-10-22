@@ -715,3 +715,46 @@ test('Workerd guarda preferencias personales, sirve snapshot y rechaza configura
     422,
   );
 });
+
+test('Workerd guarda documentos y trazos con Bearer, revisiones y metadatos livianos', async () => {
+  const f = await fixture();
+  const body = {
+    title: 'Pizarrón Workers',
+    kind: 'board',
+    elements: [
+      {
+        id: randomUUID(),
+        type: 'pen',
+        x: 10,
+        y: 20,
+        points: [
+          [0, 0],
+          [15, 20],
+          [40, 5],
+        ],
+      },
+    ],
+  };
+  const key = randomUUID();
+  let r = await call('POST', f.base + '/docs', body, f.token, key);
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  const created = r.data;
+  assert.equal((await call('POST', f.base + '/docs', body, f.token, key)).data._id, created._id);
+  r = await call('GET', f.base + '/docs', undefined, f.token);
+  assert.equal(r.status, 200);
+  assert.equal(r.data.data.length, 1);
+  assert.equal(r.data.data[0].elements, undefined);
+  r = await call('GET', f.base + '/docs/' + created._id, undefined, f.token);
+  assert.equal(r.data.elements[0].points.length, 3);
+  r = await call(
+    'PATCH',
+    f.base + '/docs/' + created._id,
+    { archived: true, revision: 1 },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(r.status, 200);
+  r = await call('GET', f.base + '/docs', undefined, f.token);
+  assert.equal(r.data.data.length, 0);
+  assert.equal((await call('GET', f.base + '/docs/' + created._id)).status, 401);
+});

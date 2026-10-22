@@ -1,3 +1,5 @@
+import { createDocsService } from './modules/docs/service.js';
+import { createDocsStore } from './adapters/mongo/docs-store.js';
 import { createGoogleIdentity } from './adapters/identity/google.js';
 import { createIdentityStore } from './adapters/mongo/identity-store.js';
 import { createBusinessDirectory } from './adapters/mongo/business-directory.js';
@@ -75,6 +77,7 @@ export async function createContainer({ client, db, config, logger, googleIdenti
       sales: createSalesAdapter(sales),
     }),
     planning: createPlanningService({ commands }),
+    docs: createDocsService({ commands, store: createDocsStore(db) }),
     projections: createProjectionsService({ commands }),
     debts: createDebtsService({ commands, finance, contacts, financialManagement }),
     creditStatements: createCreditStatementsService({ commands }),

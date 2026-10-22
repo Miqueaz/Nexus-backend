@@ -3,6 +3,12 @@ import { ensure } from '../../core/errors.js';
 
 export const moduleCatalog = [
   {
+    id: 'docs',
+    name: 'Docs',
+    description: 'Documentos por bloques, notas y pizarrones de ideas.',
+    requires: [],
+  },
+  {
     id: 'finance',
     name: 'Finanzas',
     description: 'Carteras, movimientos, créditos y diferidos.',

@@ -1,5 +1,6 @@
 import { AppError } from '../../core/errors.js';
 export const collections = [
+  'documents',
   'businesses',
   'memberships',
   'wallets',
@@ -80,6 +81,7 @@ export async function ensureIndexes(db) {
   }
   for (const name of collections)
     await db.collection(name).createIndex({ businessId: 1, createdAt: -1, _id: -1 });
+  await db.collection('documents').createIndex({ businessId: 1, updatedAt: -1, _id: -1 });
   await db
     .collection('creditStatements')
     .createIndex({ businessId: 1, creditLineId: 1, cutoffOn: 1 }, { unique: true });
@@ -125,6 +127,14 @@ export async function assertDatabasePrepared(db) {
     ['sales', { businessId: 1, quoteId: 1 }],
   ];
   try {
+    const docIndexes = await db.collection('documents').listIndexes().toArray();
+    if (
+      !docIndexes.some(
+        (index) =>
+          JSON.stringify(index.key) === JSON.stringify({ businessId: 1, updatedAt: -1, _id: -1 }),
+      )
+    )
+      throw new Error('Missing Docs index');
     for (const [name, key] of required) {
       const indexes = await db.collection(name).listIndexes().toArray();
       const index = indexes.find((i) => i.unique && JSON.stringify(i.key) === JSON.stringify(key));

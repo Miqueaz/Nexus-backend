@@ -1,0 +1,227 @@
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import request from 'supertest';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
+import { MongoClient } from 'mongodb';
+import { createContainer } from '../src/container.js';
+import { createApp } from '../src/http/app.js';
+import { ensureIndexes, assertDatabasePrepared } from '../src/adapters/mongo/database.js';
+import { createLogger } from '../src/adapters/logger.js';
+import { createDocSchema } from '../src/modules/docs/schemas.js';
+let replica, client, db, app;
+before(
+  async () => {
+    replica = await MongoMemoryReplSet.create({
+      replSet: { count: 1 },
+      instanceOpts: [{ args: ['--nounixsocket', '--wiredTigerCacheSizeGB', '0.25'] }],
+      binary: { version: '8.0.16' },
+    });
+    client = await new MongoClient(replica.getUri()).connect();
+    db = client.db('nexo_docs_' + randomUUID().replaceAll('-', ''));
+    await ensureIndexes(db);
+    const config = {
+      nodeEnv: 'test',
+      jwtSecret: 'docs-test-secret-'.repeat(8),
+      jwtIssuer: 'test',
+      jwtAudience: 'test',
+      tokenMinutes: 30,
+      corsOrigins: [],
+      trustProxyHops: 0,
+    };
+    const logger = createLogger('silent');
+    app = createApp({
+      services: await createContainer({ client, db, config, logger }),
+      db,
+      config,
+      logger,
+    });
+  },
+  { timeout: 180000 },
+);
+after(async () => {
+  if (db) await db.dropDatabase();
+  await client?.close();
+  await replica?.stop();
+});
+async function user() {
+  const email = randomUUID() + '@example.test';
+  const { body } = await request(app)
+    .post('/api/v1/auth/register')
+    .send({ name: 'Docs test', email, password: 'Una-clave-larga-123!' })
+    .expect(201);
+  return { email, token: body.accessToken };
+}
+async function fixture() {
+  const account = await user();
+  const { body } = await request(app)
+    .post('/api/v1/businesses')
+    .auth(account.token, { type: 'bearer' })
+    .send({ name: 'Docs business', currency: 'MXN' })
+    .expect(201);
+  return { ...account, business: body, base: '/api/v1/businesses/' + body._id };
+}
+function call(f, method, path, body, key = randomUUID()) {
+  let r = request(app)
+    [method](f.base + path)
+    .auth(f.token, { type: 'bearer' })
+    .set('Idempotency-Key', key);
+  return body ? r.send(body) : r;
+}
+const doc = () => ({
+  title: 'Plan <img src=x onerror=alert(1)>',
+  kind: 'document',
+  blocks: [{ id: randomUUID(), type: 'todo', text: 'Preparar propuesta', checked: false }],
+});
+const update = (record) => ({
+  title: record.title,
+  kind: record.kind,
+  color: record.color,
+  blocks: record.blocks,
+  elements: record.elements,
+  revision: record.revision,
+});
+test('Docs persists structured documents, metadata-only pages, idempotent edits and audit', async () => {
+  const f = await fixture(),
+    body = doc(),
+    key = randomUUID();
+  const created = (await call(f, 'post', '/docs', body, key).expect(201)).body;
+  const retry = (await call(f, 'post', '/docs', body, key).expect(201)).body;
+  assert.equal(created._id, retry._id);
+  assert.equal(await db.collection('documents').countDocuments({ businessId: f.business._id }), 1);
+  const metadata = (await call(f, 'get', '/docs')).body.data[0];
+  assert.equal(metadata.title, body.title);
+  assert.equal(metadata.blocks, undefined);
+  assert.equal(metadata.elements, undefined);
+  const value = update(created);
+  value.blocks[0].checked = true;
+  const edited = (
+    await call(f, 'put', '/docs/' + created._id, value, 'docs-save-retry-key').expect(200)
+  ).body;
+  const replay = (
+    await call(f, 'put', '/docs/' + created._id, value, 'docs-save-retry-key').expect(200)
+  ).body;
+  assert.equal(replay.revision, edited.revision);
+  assert.equal(edited.blocks[0].checked, true);
+  await call(f, 'put', '/docs/' + created._id, { ...value, title: 'Stale revision' }).expect(409);
+  const audits = await db
+    .collection('audit')
+    .find({ businessId: f.business._id, collection: 'documents' })
+    .sort({ 'after.revision': 1 })
+    .toArray();
+  assert.equal(audits.length, 2);
+  assert.equal(audits[1].after.blocks[0].checked, true);
+});
+test('Docs blocks cross-business reads, viewer writes and writes to a disabled module', async () => {
+  const f = await fixture(),
+    other = await fixture(),
+    viewer = await user();
+  const created = (await call(f, 'post', '/docs', doc()).expect(201)).body;
+  await call(other, 'get', '/docs/' + created._id).expect(404);
+  await call(other, 'put', '/docs/' + created._id, update(created)).expect(404);
+  await call(f, 'post', '/members', { email: viewer.email, role: 'viewer' }).expect(201);
+  const v = { ...f, token: viewer.token };
+  await call(v, 'get', '/docs/' + created._id).expect(200);
+  await call(v, 'put', '/docs/' + created._id, update(created)).expect(403);
+  await call(v, 'post', '/docs', doc()).expect(403);
+  await call(v, 'patch', '/docs/' + created._id, { archived: true, revision: 1 }).expect(403);
+  await call(f, 'patch', '', { enabledModules: [], revision: f.business.revision }).expect(200);
+  await call(f, 'get', '/docs/' + created._id).expect(200);
+  const disabled = await call(f, 'post', '/docs', doc()).expect(409);
+  assert.equal(disabled.body.error.code, 'MODULE_DISABLED');
+});
+test('Boards keep strokes and shapes; archive, restore, filtering and pagination preserve content', async () => {
+  const f = await fixture();
+  const element = {
+    id: randomUUID(),
+    type: 'pen',
+    x: 50,
+    y: 40,
+    points: [
+      [0, 0],
+      [10, 12],
+      [30, 8],
+    ],
+  };
+  const board = (
+    await call(f, 'post', '/docs', {
+      title: 'Ideas [special]',
+      kind: 'board',
+      elements: [element],
+    }).expect(201)
+  ).body;
+  await call(f, 'post', '/docs', doc()).expect(201);
+  const filtered = (await call(f, 'get', '/docs?kind=board&q=%5Bspecial%5D')).body;
+  assert.equal(filtered.data.length, 1);
+  assert.equal(filtered.data[0]._id, board._id);
+  const page = (await call(f, 'get', '/docs?limit=1')).body;
+  assert.ok(page.nextCursor);
+  const next = (await call(f, 'get', '/docs?limit=1&cursor=' + page.nextCursor)).body;
+  assert.equal(next.data.length, 1);
+  assert.notEqual(next.data[0]._id, page.data[0]._id);
+  const archived = (
+    await call(f, 'patch', '/docs/' + board._id, { archived: true, revision: 1 }).expect(200)
+  ).body;
+  assert.equal((await call(f, 'get', '/docs?kind=board')).body.data.length, 0);
+  assert.equal((await call(f, 'get', '/docs?archived=true')).body.data.length, 1);
+  await call(f, 'put', '/docs/' + board._id, update(archived)).expect(409);
+  const restored = (
+    await call(f, 'patch', '/docs/' + board._id, {
+      archived: false,
+      revision: archived.revision,
+    }).expect(200)
+  ).body;
+  assert.deepEqual(restored.elements[0].points, element.points);
+  await call(f, 'put', '/docs/' + board._id, {
+    ...update(restored),
+    kind: 'document',
+    elements: [],
+  }).expect(422);
+});
+test('Docs schema rejects executable attributes, duplicate IDs, invalid geometry and oversized scenes', () => {
+  const element = { id: randomUUID(), type: 'rectangle', x: 0, y: 0, width: 50, height: 50 };
+  assert.equal(
+    createDocSchema.safeParse({ title: 'Board', kind: 'board', elements: [element] }).success,
+    true,
+  );
+  for (const elements of [
+    [{ ...element, x: Infinity }],
+    [{ ...element, stroke: 'url(javascript:alert(1))' }],
+    [element, element],
+    [{ ...element, html: '<script/>' }],
+    [{ ...element, type: 'iframe' }],
+  ])
+    assert.equal(
+      createDocSchema.safeParse({ title: 'Board', kind: 'board', elements }).success,
+      false,
+    );
+  assert.equal(createDocSchema.safeParse({ ...doc(), elements: [element] }).success, false);
+  assert.equal(
+    createDocSchema.safeParse({
+      title: 'Large',
+      kind: 'document',
+      blocks: Array.from({ length: 30 }, () => ({
+        id: randomUUID(),
+        type: 'paragraph',
+        text: 'é'.repeat(12000),
+      })),
+    }).success,
+    false,
+  );
+});
+test('Docs migration is additive and preparation detects an absent collection index', async () => {
+  await assertDatabasePrepared(db);
+  const isolated = client.db('docs_migration_' + randomUUID().replaceAll('-', ''));
+  try {
+    await ensureIndexes(isolated);
+    await isolated.collection('documents').drop();
+    await assert.rejects(
+      assertDatabasePrepared(isolated),
+      (e) => e.code === 'DATABASE_NOT_PREPARED',
+    );
+    await ensureIndexes(isolated);
+    await assertDatabasePrepared(isolated);
+  } finally {
+    await isolated.dropDatabase();
+  }
+});
