@@ -165,3 +165,14 @@ Los pizarrones admiten el campo opcional `board: {format: "excalidraw", version:
 ### Worker directo y contadores MongoDB
 
 `API_RUNTIME=direct` es el modo predeterminado. Cada solicitud administra y cierra su propio MongoClient. `authRateLimits` mantiene contadores atómicos por IP hasheada y ventana de 15 minutos, con TTL, compartidos entre todas las invocaciones. La migración agrega la colección e índice; con MONGO_AUTO_MIGRATE=true se preparan automáticamente. El login conserva scrypt y los tokens/sesiones existentes. El binding DO histórico queda disponible únicamente para reversión explícita mediante API_RUNTIME=durable-object, sin eliminar su SQLite. Véase docs/CLOUDFLARE.md para límites de CPU, latencia y transición de contadores.
+
+### Biblioteca y archivos de Docs
+
+`GET /api/v1/businesses/:businessId/docs/library` entrega una página de metadatos, 8 recientes y carpetas/secciones. Acepta los filtros de `/docs`, más `parentId=root|UUID`; sin `parentId` lista todos los documentos. Las listas excluyen bloques, escenas y `attachment.data`.
+
+- `POST /docs/containers`: `{title,kind:folder|section,parentId?,color?}`. Carpetas en raíz; secciones dentro de una carpeta del mismo negocio.
+- `PATCH /docs/:id/location`: `{revision,title?,parentId?}` para organizar y renombrar; controla permisos, pertenencia, ubicación y revisión.
+- `POST /docs/files`: `{title,name,parentId?,data}` con base64 canónico. Word (.doc/.docx), PDF y PNG/JPG/GIF/WebP, hasta 4 MiB, validando firma y extensión. Responde solo con metadatos y admite Idempotency-Key.
+- `GET /docs/:id/content`: descarga JSON autenticada del adjunto, solicitada únicamente al abrirlo. El cliente genera una URL Blob temporal para vista previa de imágenes y descarga. No se aceptan HTML/SVG ni enlaces externos arbitrarios.
+
+Se conserva la colección `documents` y sus índices existentes; este cambio no añade requisitos de migración. Crear o mover contenido bloquea transaccionalmente su ubicación para evitar carreras al archivar carpetas. Los cambios se auditan como el resto de módulos. Los archivos y la auditoría consumen almacenamiento de MongoDB; las listas no incluyen sus bytes.

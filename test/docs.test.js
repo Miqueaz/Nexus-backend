@@ -360,3 +360,86 @@ test('Nexo board backgrounds accept persisted dots/lines/none and reject unknown
     false,
   );
 });
+
+test('Library groups documents into scoped folders and sections, moves with revisions and protects nonempty folders', async () => {
+  const f = await fixture(),
+    other = await fixture();
+  const folder = (
+    await call(f, 'post', '/docs/containers', { title: 'Proyectos', kind: 'folder' }).expect(201)
+  ).body;
+  const section = (
+    await call(f, 'post', '/docs/containers', {
+      title: 'Diseño',
+      kind: 'section',
+      parentId: folder._id,
+    }).expect(201)
+  ).body;
+  await call(f, 'post', '/docs/containers', { title: 'Sin carpeta', kind: 'section' }).expect(422);
+  await call(f, 'post', '/docs/containers', {
+    title: 'Anidada',
+    kind: 'folder',
+    parentId: folder._id,
+  }).expect(422);
+  await call(other, 'post', '/docs', { ...doc(), parentId: section._id }).expect(404);
+  const note = (await call(f, 'post', '/docs', { ...doc(), parentId: section._id }).expect(201))
+    .body;
+  const library = (await call(f, 'get', '/docs/library?parentId=' + section._id).expect(200)).body;
+  assert.equal(library.data.length, 1);
+  assert.equal(library.data[0]._id, note._id);
+  assert.equal(library.containers.length, 2);
+  assert.equal(library.recent.length, 1);
+  assert.equal(library.data[0].blocks, undefined);
+  const moved = (
+    await call(f, 'patch', '/docs/' + note._id + '/location', {
+      parentId: folder._id,
+      revision: note.revision,
+    }).expect(200)
+  ).body;
+  assert.equal(moved.parentId, folder._id);
+  await call(f, 'patch', '/docs/' + note._id + '/location', {
+    parentId: null,
+    revision: note.revision,
+  }).expect(409);
+  const liveFolder = (await call(f, 'get', '/docs/' + folder._id)).body;
+  await call(f, 'patch', '/docs/' + folder._id, {
+    archived: true,
+    revision: liveFolder.revision,
+  }).expect(409);
+  await call(f, 'patch', '/docs/' + moved._id + '/location', {
+    parentId: null,
+    revision: moved.revision,
+  }).expect(200);
+  const root = (await call(f, 'get', '/docs/library?parentId=root')).body;
+  assert.equal(root.data[0]._id, note._id);
+});
+
+test('File uploads validate bytes and limits; metadata lists never contain file contents and reads respect membership', async () => {
+  const f = await fixture(),
+    other = await fixture(),
+    key = randomUUID();
+  const data = Buffer.from('%PDF-1.7\nNexo test\n%%EOF').toString('base64');
+  const body = { title: 'Contrato.pdf', name: 'Contrato.pdf', data };
+  const row = (await call(f, 'post', '/docs/files', body, key).expect(201)).body;
+  assert.equal(row.attachment.data, undefined);
+  assert.equal(row.attachment.mime, 'application/pdf');
+  assert.equal((await call(f, 'post', '/docs/files', body, key).expect(201)).body._id, row._id);
+  const library = (await call(f, 'get', '/docs/library?kind=file')).body;
+  assert.equal(library.data[0].attachment.data, undefined);
+  assert.equal(library.recent[0].attachment.data, undefined);
+  assert.equal((await call(f, 'get', '/docs/' + row._id)).body.attachment.data, undefined);
+  assert.equal((await call(f, 'get', '/docs/' + row._id + '/content')).body.data, data);
+  await call(other, 'get', '/docs/' + row._id + '/content').expect(404);
+  await call(f, 'post', '/docs/files', { ...body, name: 'active.html' }).expect(422);
+  await call(f, 'post', '/docs/files', {
+    ...body,
+    data: Buffer.from('invalid pdf').toString('base64'),
+  }).expect(422);
+  await call(f, 'post', '/docs/files', { ...body, name: '../bad.pdf' }).expect(422);
+  const viewer = await user();
+  await call(f, 'post', '/members', { email: viewer.email, role: 'viewer' }).expect(201);
+  await call({ ...f, token: viewer.token }, 'post', '/docs/files', body).expect(403);
+  await call({ ...f, token: viewer.token }, 'patch', '/docs/' + row._id + '/location', {
+    title: 'Changed',
+    revision: 1,
+  }).expect(403);
+});

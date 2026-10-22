@@ -38,6 +38,7 @@ export const elementSchema = z.strictObject({
 const uniqueIds = (rows) => new Set(rows.map((r) => r.id)).size === rows.length;
 const body = {
   title: z.string().trim().min(1).max(200),
+  parentId: id.nullable().optional(),
   board: boardSchema.nullable().optional(),
   kind: z.enum(['document', 'board']),
   color: color.default('#164e3d'),
@@ -66,7 +67,36 @@ export const archiveDocSchema = z.strictObject({ archived: z.boolean(), revision
 export const listDocsSchema = z.strictObject({
   limit: z.coerce.number().int().min(1).max(60).default(30),
   cursor: id.optional(),
-  kind: z.enum(['document', 'board']).optional(),
+  kind: z.enum(['document', 'board', 'file']).optional(),
+  parentId: z.union([id, z.literal('root')]).optional(),
   archived: z.enum(['true', 'false']).default('false'),
   q: z.string().trim().max(100).optional(),
+});
+export const containerSchema = z.strictObject({
+  title: z.string().trim().min(1).max(200),
+  kind: z.enum(['folder', 'section']),
+  parentId: id.nullable().default(null),
+  color: color.default('#164e3d'),
+});
+export const locationSchema = z
+  .strictObject({
+    revision,
+    parentId: id.nullable().optional(),
+    title: z.string().trim().min(1).max(200).optional(),
+  })
+  .refine((d) => d.parentId !== undefined || d.title !== undefined, 'Indica nombre o ubicación');
+export const uploadSchema = z.strictObject({
+  title: z.string().trim().min(1).max(200),
+  parentId: id.nullable().default(null),
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .refine((v) => !/[\\/\x00-\x1f]/.test(v)),
+  data: z
+    .string()
+    .min(4)
+    .max(5592408)
+    .regex(/^[A-Za-z0-9+/]*={0,2}$/),
 });

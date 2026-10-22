@@ -49,6 +49,13 @@ export function createRoutes(s) {
   write('patch', '/', (r) => s.businesses.update(r.context, r.body));
   write('put', '/preferences', (r) => s.businesses.savePreferences(r.context, r.body));
   read('/docs', (r) => s.docs.list(r.context, r.query));
+  read('/docs/library', (r) => s.docs.library(r.context, r.query));
+  write('post', '/docs/containers', (r) => s.docs.createContainer(r.context, r.body), financial);
+  write('post', '/docs/files', (r) => s.docs.upload(r.context, r.body), financial);
+  read('/docs/:id/content', (r) => s.docs.content(r.context, r.params.id));
+  write('patch', '/docs/:id/location', (r) => s.docs.relocate(r.context, r.params.id, r.body), {
+    idempotent: true,
+  });
   read('/docs/:id', (r) => s.docs.get(r.context, r.params.id));
   write('post', '/docs', (r) => s.docs.create(r.context, r.body), financial);
   write('put', '/docs/:id', (r) => s.docs.update(r.context, r.params.id, r.body), {
