@@ -8,7 +8,7 @@ export function createAuditAdapter(db) {
       await db.collection('audit').insertMany(
         tx.changes.map((change, order) => ({
           _id: randomUUID(),
-          businessId: tx.businessId,
+          businessId: change.after?.businessId ?? change.before?.businessId ?? tx.businessId,
           commandId,
           order,
           action,

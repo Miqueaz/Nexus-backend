@@ -266,3 +266,19 @@ Cada widget: `{id:uuid,title,type:"chart"|"list"|"metric",preset,accounts:[],per
 La respuesta y los metadatos de `GET /businesses/:id` y `/snapshot` incluyen `uiPreferences` y `preferencesRevision` del solicitante, sin nuevas consultas por widget. Se guarda en su membresía con auditoría `preferences.updated`; no necesita migración adicional. La actividad utiliza cuatro series excluyentes: entradas, otras salidas, compras a crédito y abonos a crédito. El preset `outflows` suma las dos clases de salida. Excluye transferencias internas y apertura; no duplica un abono por coincidir con cuenta y línea. Los saldos no se alteran al personalizar.
 
 Los widgets admiten `columns` (entero de 3 a 12), `height` (entero de 220 a 1200, píxeles) y `color` (`#RRGGBB`, normalizado a minúsculas). Son campos opcionales: los paneles anteriores conservan el ancho derivado de `size`, la altura automática y el color del preset. Omitir `height` restablece la altura automática. La interfaz ajusta el ancho a la pantalla disponible en tablet/móvil sin modificar la preferencia guardada para escritorio. Redimensionar o cambiar colores solo modifica el borrador; se persiste en una escritura al guardar el panel.
+
+### Organizaciones y acceso por espacio
+
+Las organizaciones agrupan espacios existentes; no conceden acceso automático. Solo su propietario administra equipo, identidad y roles. Los usuarios agregados deben tener una cuenta Nexo con ese correo; esta versión no envía invitaciones por email.
+
+- `GET/POST /organizations`; `GET/PATCH /organizations/:organizationId`.
+- `POST /organizations/:organizationId/roles`; `PATCH .../roles/:roleId`.
+- `POST .../members` con `{email}`; `PATCH .../members/:memberId` con `{revision,state:"removed"}` revoca los accesos de sus espacios.
+- `PUT .../spaces/:businessId` con `{revision}` incorpora un espacio propio que no pertenezca a otra organización.
+- `PUT .../spaces/:businessId/grants/:memberId` con `{revision,roleId,projectScope:{mode:"all"|"selected",ids:[]}}` asigna un rol por persona y espacio. `roleId:null` revoca; `revision:0` solo para membresías que no existan. Los accesos retirados conservan su revisión y pueden reasignarse.
+
+Todas estas escrituras requieren Bearer e `Idempotency-Key`. Roles: `{name,description,color,permissions:{docs,finance,inventory,sales,quotes,projections,contacts,calendar,projects,history}}`, cada permiso `none|read|write`; los omitidos son `none`. Editar Ventas requiere edición de Finanzas e Inventario. Editar un rol requiere su revisión; archivarlo usa `archived:true` y se rechaza mientras tenga asignaciones activas.
+
+Los permisos se resuelven desde Mongo en cada solicitud, sin incorporar privilegios al JWT. Se comprueban en comandos, consultas, snapshots, historial, Docs y calendario. Los proyectos seleccionados se filtran también en consultas históricas y no permiten crear nuevos proyectos. Auditoría y administración de accesos quedan protegidas. El propietario del espacio conserva acceso completo. Los accesos directos anteriores permanecen visibles para su revisión y pueden retirarse o reemplazarse por roles personalizados.
+
+La migración es aditiva: `npm run db:migrate` crea las colecciones e índices de organizaciones. Workers con `MONGO_AUTO_MIGRATE=true` prepara los índices al detectar su ausencia, sin borrar datos. Las mutaciones de organización usan transacciones, revisiones, idempotencia y auditoría; la asignación de accesos se serializa frente a retiros de miembros y cambios de roles.

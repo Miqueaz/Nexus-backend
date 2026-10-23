@@ -1,4 +1,5 @@
-export function createBusinessDirectory(db) {
+import { memberFields } from '../modules/workspace-access.js';
+export function createBusinessDirectory(db, workspaceAccess) {
   return {
     async listForUser(userId) {
       const members = await db
@@ -9,10 +10,16 @@ export function createBusinessDirectory(db) {
         .collection('businesses')
         .find({ _id: { $in: members.map((m) => m.businessId) } })
         .toArray();
-      return businesses.map((b) => ({
-        ...b,
-        role: members.find((m) => m.businessId === b._id).role,
-      }));
+      const result = [];
+      for (const b of businesses) {
+        try {
+          const member = await workspaceAccess.resolve(members.find((m) => m.businessId === b._id));
+          result.push({ ...b, ...memberFields(member) });
+        } catch (error) {
+          if (error.status !== 404) throw error;
+        }
+      }
+      return result;
     },
     findUserByEmail: (tx, email) =>
       db.collection('users').findOne({ email }, { session: tx.session, projection: { _id: 1 } }),

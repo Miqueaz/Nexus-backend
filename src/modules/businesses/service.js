@@ -1,3 +1,4 @@
+import { memberFields } from '../../adapters/modules/workspace-access.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { z, id, revision, parsePatch } from '../../core/validation.js';
 import { preferencesSchema, personalPreferences } from './preferences.js';
@@ -9,10 +10,13 @@ export function createBusinessService({ uow, directory, audit, commands, idempot
       return (await directory.listForUser(ctx.userId)).map(businessSettings);
     },
     async get(ctx) {
-      return commands.read(ctx, async (tx) => {
+      return commands.read(ctx, async (tx, member) => {
         const business = await tx.get('businesses', ctx.businessId);
-        const member = (await tx.find('memberships', { userId: ctx.userId }))[0];
-        return businessSettings({ ...business, role: member.role, ...personalPreferences(member) });
+        return businessSettings({
+          ...business,
+          ...memberFields(member),
+          ...personalPreferences(member),
+        });
       });
     },
     async savePreferences(ctx, input) {

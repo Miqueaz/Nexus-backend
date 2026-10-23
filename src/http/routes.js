@@ -39,6 +39,64 @@ export function createRoutes(s) {
   add('post', prefix + '/businesses', (r) => s.businesses.create(r.context, r.body), {
     status: 201,
   });
+  const org = prefix + '/organizations';
+  add('get', org, async (r) => ({ data: await s.organizations.list(r.context) }));
+  add('post', org, (r) => s.organizations.create(r.context, r.body), {
+    idempotent: true,
+    status: 201,
+  });
+  add('get', org + '/:organizationId', (r) =>
+    s.organizations.get(r.context, r.params.organizationId),
+  );
+  add(
+    'patch',
+    org + '/:organizationId',
+    (r) => s.organizations.update(r.context, r.params.organizationId, r.body),
+    { idempotent: true },
+  );
+  add(
+    'post',
+    org + '/:organizationId/roles',
+    (r) => s.organizations.role(r.context, r.params.organizationId, null, r.body),
+    { idempotent: true, status: 201 },
+  );
+  add(
+    'patch',
+    org + '/:organizationId/roles/:roleId',
+    (r) => s.organizations.role(r.context, r.params.organizationId, r.params.roleId, r.body),
+    { idempotent: true },
+  );
+  add(
+    'post',
+    org + '/:organizationId/members',
+    (r) => s.organizations.addMember(r.context, r.params.organizationId, r.body),
+    { idempotent: true, status: 201 },
+  );
+  add(
+    'patch',
+    org + '/:organizationId/members/:memberId',
+    (r) => s.organizations.member(r.context, r.params.organizationId, r.params.memberId, r.body),
+    { idempotent: true },
+  );
+  add(
+    'put',
+    org + '/:organizationId/spaces/:businessId',
+    (r) => s.organizations.attach(r.context, r.params.organizationId, r.params.businessId, r.body),
+    { idempotent: true },
+  );
+  add(
+    'put',
+    org + '/:organizationId/spaces/:businessId/grants/:memberId',
+    (r) =>
+      s.organizations.grant(
+        r.context,
+        r.params.organizationId,
+        r.params.businessId,
+        r.params.memberId,
+        r.body,
+      ),
+    { idempotent: true },
+  );
   const read = (path, handler) =>
     add('get', base + (path === '/' ? '' : path), handler, { business: true });
   const write = (method, path, handler, options = {}) =>

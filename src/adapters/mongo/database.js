@@ -1,5 +1,8 @@
 import { AppError } from '../../core/errors.js';
 export const collections = [
+  'organizations',
+  'organizationMembers',
+  'organizationRoles',
   'documents',
   'businesses',
   'memberships',
@@ -100,6 +103,12 @@ export async function ensureIndexes(db) {
   await db.collection('sessions').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
   await db.collection('memberships').createIndex({ businessId: 1, userId: 1 }, { unique: true });
   await db.collection('memberships').createIndex({ userId: 1 });
+  await db
+    .collection('organizationMembers')
+    .createIndex({ businessId: 1, userId: 1 }, { unique: true });
+  await db.collection('organizationMembers').createIndex({ userId: 1, state: 1 });
+  await db.collection('businesses').createIndex({ organizationId: 1 });
+  await db.collection('memberships').createIndex({ organizationId: 1, customRoleId: 1, role: 1 });
   await db.collection('idempotency').createIndex({ businessId: 1, key: 1 }, { unique: true });
   await db.collection('audit').createIndex({ businessId: 1, recordedAt: 1, _id: 1 });
   await db
@@ -122,6 +131,7 @@ export async function ensureIndexes(db) {
 /** Verifica las restricciones de consistencia sin crear índices desde Workers. */
 export async function assertDatabasePrepared(db) {
   const required = [
+    ['organizationMembers', { businessId: 1, userId: 1 }],
     ['creditStatements', { businessId: 1, creditLineId: 1, cutoffOn: 1 }],
     ['users', { email: 1 }],
     ['users', { googleSub: 1 }],

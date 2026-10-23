@@ -10,10 +10,15 @@ function stable(value) {
     );
   return value;
 }
-export function createCommands({ uow, idempotency, audit, logger, moduleAccess }) {
+export function createCommands({ uow, idempotency, audit, logger, moduleAccess, workspaceAccess }) {
   async function membership(tx, ctx, write = false, owner = false) {
-    const member = (await tx.find('memberships', { userId: ctx.userId }))[0];
+    let member = (await tx.find('memberships', { userId: ctx.userId }))[0];
     ensure(member && member.role !== 'removed', 404, 'NOT_FOUND', 'Negocio no encontrado');
+    if (workspaceAccess) {
+      member = await workspaceAccess.resolve(member, tx.session);
+      workspaceAccess.assertRoute(member, ctx);
+      workspaceAccess.bind(tx, member);
+    }
     ensure(
       !write || ['owner', 'editor'].includes(member.role),
       403,
@@ -73,7 +78,16 @@ export function createCommands({ uow, idempotency, audit, logger, moduleAccess }
     async read(ctx, operation, { module } = {}) {
       return uow.run(ctx.businessId, async (tx) => {
         const member = await membership(tx, ctx);
-        if (module) await moduleAccess.assertEnabled(tx, module);
+        if (module) {
+          if (tx.accessMember?.access)
+            ensure(
+              ['read', 'write'].includes(tx.accessMember.access.permissions[module]),
+              403,
+              'MODULE_FORBIDDEN',
+              'Módulo sin acceso',
+            );
+          await moduleAccess.assertEnabled(tx, module);
+        }
         return operation(tx, member);
       });
     },

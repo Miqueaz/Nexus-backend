@@ -1,3 +1,10 @@
+import {
+  allows,
+  assertAccess,
+  resourceModules,
+  projectFilter,
+  memberFields,
+} from '../modules/workspace-access.js';
 import { personalPreferences } from '../../modules/businesses/preferences.js';
 import { z, id } from '../../core/validation.js';
 import { ensure, missing } from '../../core/errors.js';
@@ -58,7 +65,8 @@ export function createQueries({ db, commands }) {
     return commands.read(ctx, fn, options);
   }
   async function listPage(tx, ctx, collection, p) {
-    const filter = { businessId: ctx.businessId };
+    assertAccess(tx.accessMember, resourceModules[collection]);
+    const filter = { businessId: ctx.businessId, ...projectFilter(tx.accessMember, collection) };
     if (p.archived !== undefined) filter.archived = p.archived === 'true';
     if (p.listId) filter.listIds = p.listId;
     if (p.cursor) {
@@ -80,11 +88,16 @@ export function createQueries({ db, commands }) {
     };
   }
   async function historyPage(tx, ctx, d) {
+    assertAccess(tx.accessMember, 'history');
+    assertAccess(tx.accessMember, resourceModules[d.collection]);
     const at = new Date(d.at);
     const match = {
       businessId: ctx.businessId,
       collection: d.collection,
       recordedAt: { $lte: at },
+      ...(d.collection === 'projects' && tx.accessMember?.access?.projectScope.mode === 'selected'
+        ? { entityId: { $in: tx.accessMember.access.projectScope.ids } }
+        : {}),
     };
     const rows = await db
       .collection('audit')
@@ -128,6 +141,7 @@ export function createQueries({ db, commands }) {
           'La fecha debe estar en el pasado',
         );
       const load = async (tx, member) => {
+        if (d.at) assertAccess(member, 'history');
         // One database round trip after membership validation. Results are emitted
         // per record, rather than as a single BSON document with a 16 MiB ceiling.
         const pipeline = [
@@ -136,12 +150,19 @@ export function createQueries({ db, commands }) {
         ];
         for (const name of d.collections) {
           const collection = snapshotCollections[name];
+          if (!allows(member, resourceModules[collection])) {
+            pipeline.push({ $set: { [name]: [] } });
+            continue;
+          }
           const stages = d.at
             ? [
                 {
                   $match: {
                     businessId: ctx.businessId,
                     collection,
+                    ...(collection === 'projects' && member.access?.projectScope.mode === 'selected'
+                      ? { entityId: { $in: member.access.projectScope.ids } }
+                      : {}),
                     recordedAt: { $lte: new Date(d.at) },
                   },
                 },
@@ -152,7 +173,7 @@ export function createQueries({ db, commands }) {
                 { $replaceRoot: { newRoot: '$snapshot' } },
               ]
             : [
-                { $match: { businessId: ctx.businessId } },
+                { $match: { businessId: ctx.businessId, ...projectFilter(member, collection) } },
                 { $sort: { createdAt: -1, _id: -1 } },
                 { $limit: 101 },
               ];
@@ -203,7 +224,7 @@ export function createQueries({ db, commands }) {
         return {
           business: businessSettings({
             ...business,
-            role: member.role,
+            ...memberFields(member),
             ...personalPreferences(member),
           }),
           collections,
@@ -217,18 +238,21 @@ export function createQueries({ db, commands }) {
         return authorized(ctx, async (tx, member) => {
           const business = await tx.get('businesses', ctx.businessId),
             collections = {};
+          if (d.at) assertAccess(member, 'history');
           for (const name of d.collections)
-            collections[name] = d.at
-              ? await historyPage(tx, ctx, {
-                  collection: snapshotCollections[name],
-                  at: d.at,
-                  limit: 100,
-                })
-              : await listPage(tx, ctx, snapshotCollections[name], { limit: 100 });
+            collections[name] = !allows(member, resourceModules[snapshotCollections[name]])
+              ? { data: [], nextCursor: null, restricted: true }
+              : d.at
+                ? await historyPage(tx, ctx, {
+                    collection: snapshotCollections[name],
+                    at: d.at,
+                    limit: 100,
+                  })
+                : await listPage(tx, ctx, snapshotCollections[name], { limit: 100 });
           return {
             business: businessSettings({
               ...business,
-              role: member.role,
+              ...memberFields(member),
               ...personalPreferences(member),
             }),
             collections,
@@ -268,6 +292,12 @@ export function createQueries({ db, commands }) {
         })
         .parse(query);
       return authorized(ctx, async (tx) => {
+        ensure(
+          !tx.accessMember?.access,
+          403,
+          'FORBIDDEN',
+          'Solo el propietario consulta la auditoría',
+        );
         const filter = { businessId: ctx.businessId };
         if (d.entityId) filter.entityId = d.entityId;
         if (d.before) filter.recordedAt = { $lt: new Date(d.before) };
@@ -299,6 +329,7 @@ export function createQueries({ db, commands }) {
         .parse(query);
       ensure(!d.from || !d.to || d.from <= d.to, 422, 'DATE_RANGE', 'Rango inválido');
       return authorized(ctx, async (tx) => {
+        assertAccess(tx.accessMember, 'finance');
         const filter = { businessId: ctx.businessId };
         if (d.from || d.to)
           filter.occurredOn = {

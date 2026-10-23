@@ -1,3 +1,6 @@
+import { createOrganizationService } from './modules/organizations/service.js';
+import { createOrganizationStore } from './adapters/mongo/organization-store.js';
+import { createWorkspaceAccess } from './adapters/modules/workspace-access.js';
 import { createDocsService } from './modules/docs/service.js';
 import { createDocsStore } from './adapters/mongo/docs-store.js';
 import { createGoogleIdentity } from './adapters/identity/google.js';
@@ -30,7 +33,9 @@ export async function createContainer({ client, db, config, logger, googleIdenti
   const uow = createUnitOfWork(client, db);
   const audit = createAuditAdapter(db);
   const idempotency = createIdempotencyStore(db);
+  const workspaceAccess = createWorkspaceAccess(db);
   const commands = createCommands({
+    workspaceAccess,
     uow,
     idempotency,
     audit,
@@ -49,9 +54,16 @@ export async function createContainer({ client, db, config, logger, googleIdenti
       logger,
       googleIdentity: googleIdentity ?? createGoogleIdentity({ clientId: config.googleClientId }),
     }),
+    organizations: createOrganizationService({
+      uow,
+      store: createOrganizationStore(db),
+      audit,
+      idempotency,
+      logger,
+    }),
     businesses: createBusinessService({
       uow,
-      directory: createBusinessDirectory(db),
+      directory: createBusinessDirectory(db, workspaceAccess),
       audit,
       commands,
       idempotency,

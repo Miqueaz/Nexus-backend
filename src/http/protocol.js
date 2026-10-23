@@ -8,6 +8,17 @@ export async function authorizeRoute(route, req, services) {
   if (route.business) {
     id.parse(req.params.businessId);
     context.businessId = req.params.businessId;
+    const relative = route.path.split('/:businessId')[1] || '';
+    const resource = req.params.collection || relative.split('/')[1];
+    const readOnlyPost = relative.endsWith('/calculate') || relative.endsWith('/preview');
+    context.accessRequirement = {
+      resource,
+      write:
+        !['GET', 'HEAD', 'OPTIONS'].includes(req.method.toUpperCase()) &&
+        !readOnlyPost &&
+        resource !== 'preferences',
+      history: resource === 'snapshot' && !!req.query?.at,
+    };
     context.key = req.headers['idempotency-key'];
     ensure(
       !req.headers['x-history-at'] || ['GET', 'HEAD', 'OPTIONS'].includes(req.method.toUpperCase()),

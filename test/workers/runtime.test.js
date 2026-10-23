@@ -946,3 +946,92 @@ test('Workerd applies compact Docs saves with revisions and small idempotent ack
     'Batched board',
   );
 });
+
+test('Workerd enforces organization roles, module isolation and revocation without Durable Objects', async () => {
+  const owner = await fixture('192.0.2.35');
+  const email = randomUUID() + '@example.com';
+  const registered = await call(
+    'POST',
+    '/api/v1/auth/register',
+    { name: 'Miembro', email, password: 'UnaClaveLarga123!' },
+    undefined,
+    undefined,
+    '192.0.2.36',
+  );
+  assert.equal(registered.status, 201);
+  const token = registered.data.accessToken;
+  const org = await call(
+    'POST',
+    '/api/v1/organizations',
+    { name: 'Equipo Workers' },
+    owner.token,
+    randomUUID(),
+  );
+  assert.equal(org.status, 201, JSON.stringify(org.data));
+  const base = '/api/v1/organizations/' + org.data._id;
+  const b = await call('GET', owner.base, undefined, owner.token);
+  assert.equal(
+    (
+      await call(
+        'PUT',
+        base + '/spaces/' + owner.businessId,
+        { revision: b.data.revision },
+        owner.token,
+        randomUUID(),
+      )
+    ).status,
+    200,
+  );
+  const member = await call('POST', base + '/members', { email }, owner.token, randomUUID());
+  assert.equal(member.status, 201);
+  const role = await call(
+    'POST',
+    base + '/roles',
+    { name: 'Notas lector', permissions: { docs: 'read' } },
+    owner.token,
+    randomUUID(),
+  );
+  assert.equal(role.status, 201, JSON.stringify(role.data));
+  assert.equal(
+    (
+      await call(
+        'PUT',
+        base + '/spaces/' + owner.businessId + '/grants/' + member.data._id,
+        { revision: 0, roleId: role.data._id },
+        owner.token,
+        randomUUID(),
+      )
+    ).status,
+    200,
+  );
+  assert.equal((await call('GET', owner.base + '/docs', undefined, token)).status, 200);
+  assert.equal((await call('GET', owner.base + '/wallets', undefined, token)).status, 403);
+  assert.equal(
+    (
+      await call(
+        'POST',
+        owner.base + '/docs',
+        { title: 'No autorizado', kind: 'document' },
+        token,
+        randomUUID(),
+      )
+    ).status,
+    403,
+  );
+  const snap = await call('GET', owner.base + '/snapshot', undefined, token);
+  assert.equal(snap.status, 200);
+  assert.deepEqual(snap.data.collections.wallets.data, []);
+  assert.equal(
+    (
+      await call(
+        'PATCH',
+        base + '/members/' + member.data._id,
+        { revision: member.data.revision, state: 'removed' },
+        owner.token,
+        randomUUID(),
+      )
+    ).status,
+    200,
+  );
+  assert.equal((await call('GET', owner.base + '/docs', undefined, token)).status, 404);
+});
