@@ -516,3 +516,102 @@ test('Rich blocks preserve fonts, ink and image/board references while rejecting
     title: 'References preserved',
   }).expect(200);
 });
+
+test('Compact saves are revision-guarded, scoped, idempotent and fully audited', async () => {
+  const f = await fixture(),
+    created = (await call(f, 'post', '/docs', doc()).expect(201)).body;
+  const changed = { ...created.blocks[0], text: 'Batched edit' },
+    key = randomUUID(),
+    payload = {
+      revision: created.revision,
+      changes: { blocks: { upsert: [changed], remove: [] } },
+    };
+  const endpoint = '/docs/' + created._id + '/save';
+  const ack = (await call(f, 'patch', endpoint, payload, key).expect(200)).body;
+  assert.deepEqual(Object.keys(ack).sort(), ['_id', 'revision', 'updatedAt']);
+  assert.equal(ack.revision, 2);
+  const retry = (await call(f, 'patch', endpoint, payload, key).expect(200)).body;
+  assert.deepEqual(retry, ack);
+  const saved = (await call(f, 'get', '/docs/' + created._id).expect(200)).body;
+  assert.equal(saved.blocks[0].text, 'Batched edit');
+  assert.equal(
+    await db
+      .collection('audit')
+      .countDocuments({ businessId: f.business._id, action: 'docs.updated' }),
+    1,
+  );
+  const record = await db
+    .collection('audit')
+    .findOne({ businessId: f.business._id, action: 'docs.updated' });
+  assert.equal(record.before.blocks[0].text, created.blocks[0].text);
+  assert.equal(record.after.blocks[0].text, 'Batched edit');
+  const replay = await db.collection('idempotency').findOne({ businessId: f.business._id, key });
+  if (replay) assert.equal(replay.response.blocks, undefined);
+  await call(f, 'patch', endpoint, payload).expect(409);
+  const other = await fixture();
+  await call(other, 'patch', endpoint, { revision: 2, changes: { title: 'Not mine' } }).expect(404);
+  await call(f, 'patch', endpoint, {
+    revision: 2,
+    changes: { blocks: { upsert: [{ ...changed, type: 'html' }], remove: [] } },
+  }).expect(422);
+});
+
+test('board deltas omit unchanged images and large scenes; local latency is reported without an SLA', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const scene = JSON.parse(
+    await readFile(new URL('./fixtures/excalidraw-scene.json', import.meta.url), 'utf8'),
+  );
+  const f = await fixture();
+  let saved = (
+    await call(f, 'post', '/docs', { title: 'Delta board', kind: 'board', board: scene }).expect(
+      201,
+    )
+  ).body;
+  const source = saved.board.elements.find((e) => e.type === 'freedraw');
+  const element = { ...source, id: 'new_stroke_' + randomUUID().replaceAll('-', ''), version: 1 };
+  const payload = {
+    revision: saved.revision,
+    changes: {
+      boardPatch: {
+        elements: {
+          upsert: [element],
+          remove: [],
+          order: [...saved.board.elements.map((e) => e.id), element.id],
+        },
+      },
+    },
+  };
+  const bytes = Buffer.byteLength(JSON.stringify(payload));
+  const fullBytes = Buffer.byteLength(
+    JSON.stringify({
+      ...update(saved),
+      board: { ...saved.board, elements: [...saved.board.elements, element] },
+    }),
+  );
+  const timings = [];
+  let revision = saved.revision;
+  for (let i = 0; i < 5; i++) {
+    const input = i ? { revision, changes: { title: 'Board ' + i } } : payload;
+    const start = performance.now();
+    const ack = (await call(f, 'patch', '/docs/' + saved._id + '/save', input).expect(200)).body;
+    timings.push(performance.now() - start);
+    revision = ack.revision;
+    assert.ok(Buffer.byteLength(JSON.stringify(ack)) < 200);
+  }
+  saved = (await call(f, 'get', '/docs/' + saved._id).expect(200)).body;
+  assert.equal(saved.board.elements.length, scene.elements.length + 1);
+  assert.deepEqual(saved.board.files, scene.files);
+  assert.ok(bytes < fullBytes);
+  timings.sort((a, b) => a - b);
+  console.log(
+    'docs-save-local-benchmark',
+    JSON.stringify({
+      requests: 5,
+      deltaBytes: bytes,
+      fullBytes,
+      p50Ms: +timings[2].toFixed(2),
+      maxMs: +timings.at(-1).toFixed(2),
+      environment: 'HTTP + local Mongo replica; excludes Cloudflare/Atlas network',
+    }),
+  );
+});

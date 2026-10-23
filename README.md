@@ -178,3 +178,10 @@ Los pizarrones admiten el campo opcional `board: {format: "excalidraw", version:
 Se conserva la colección `documents` y sus índices existentes; este cambio no añade requisitos de migración. Crear o mover contenido bloquea transaccionalmente su ubicación para evitar carreras al archivar carpetas. Los cambios se auditan como el resto de módulos. Los archivos y la auditoría consumen almacenamiento de MongoDB; las listas no incluyen sus bytes.
 
 Los bloques de documentos admiten `font` (`sans|serif|handwritten|mono`) y los nuevos tipos `image` (attachmentId), `boardRef` (boardId) e `ink` (strokes). La fuente general del documento también se puede guardar en `font`. Los trazos usan coordenadas finitas dentro de 1000×500, hasta 160 trazos y 12000 puntos por bloque; sigue vigente el límite total de 220 KiB de la nota. Cada documento admite 40 medios. Las referencias se comprueban dentro de la transacción y del negocio y se deduplican al validarlas. Las referencias existentes a medios archivados se conservan para que archivar un adjunto no impida editar el resto de la nota. No se aceptan HTML, src ni URLs arbitrarias en los bloques.
+
+
+### Guardado compacto de Docs
+
+`PATCH /api/v1/businesses/:businessId/docs/:id/save` recibe `{revision, changes}`. Acepta metadatos editables, deltas de bloques/elementos y `boardPatch` con elementos, imágenes y apariencia modificados. Valida el documento combinado con los límites existentes y conserva pertenencia, permisos, revisiones, idempotencia y auditoría transaccional completa. Responde únicamente `{_id, revision, updatedAt}`. No hay migración adicional y el PUT anterior sigue operativo.
+
+El adaptador reutiliza la lectura del documento dentro de la transacción, evitando volver a consultar el mismo contenido antes del update. La copia de idempotencia almacena solo el acuse, no otro documento completo. La auditoría sigue conservando antes/después. `node --test test/docs-patch.test.js test/docs.test.js` incluye el benchmark local; los resultados no son un SLA de Cloudflare/Atlas ni prometen 10 ms por solicitud.

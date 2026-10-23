@@ -73,12 +73,19 @@ async function call(method, path, body, token, key, ip = '192.0.2.10') {
   const data = await r.json();
   return { status: r.status, headers: r.headers, data };
 }
-async function fixture() {
-  const session = await call('POST', '/api/v1/auth/register', {
-    name: 'Workers',
-    email: randomUUID() + '@example.com',
-    password: 'UnaClaveLarga123!',
-  });
+async function fixture(ip = '192.0.2.10') {
+  const session = await call(
+    'POST',
+    '/api/v1/auth/register',
+    {
+      name: 'Workers',
+      email: randomUUID() + '@example.com',
+      password: 'UnaClaveLarga123!',
+    },
+    undefined,
+    undefined,
+    ip,
+  );
   assert.equal(session.status, 201, JSON.stringify(session.data));
   const token = session.data.accessToken;
   const b = await call('POST', '/api/v1/businesses', { name: 'Workers', currency: 'MXN' }, token);
@@ -908,4 +915,34 @@ test('Workerd persists official Excalidraw scenes above 256KB only on Docs route
   assert.equal(unauthorized.status, 401);
   const tooLarge = await call('POST', f.base + '/movements', body, f.token, randomUUID());
   assert.equal(tooLarge.status, 413);
+});
+
+test('Workerd applies compact Docs saves with revisions and small idempotent acknowledgements', async () => {
+  const f = await fixture('192.0.2.111');
+  let r = await call(
+    'POST',
+    f.base + '/docs',
+    { title: 'Compact board', kind: 'board' },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(r.status, 201);
+  const id = r.data._id,
+    key = randomUUID(),
+    payload = { revision: 1, changes: { title: 'Batched board' } };
+  const first = await call('PATCH', f.base + '/docs/' + id + '/save', payload, f.token, key);
+  assert.equal(first.status, 200, JSON.stringify(first.data));
+  assert.equal(first.data.revision, 2);
+  assert.equal(first.data.board, undefined);
+  assert.ok(JSON.stringify(first.data).length < 200);
+  const retry = await call('PATCH', f.base + '/docs/' + id + '/save', payload, f.token, key);
+  assert.deepEqual(retry.data, first.data);
+  assert.equal(
+    (await call('PATCH', f.base + '/docs/' + id + '/save', payload, f.token, randomUUID())).status,
+    409,
+  );
+  assert.equal(
+    (await call('GET', f.base + '/docs/' + id, undefined, f.token)).data.title,
+    'Batched board',
+  );
 });

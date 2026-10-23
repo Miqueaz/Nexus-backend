@@ -1,6 +1,20 @@
+import { ensure } from '../../core/errors.js';
 /** Metadata reads keep board strokes and document blocks out of the library listing. */
 export function createDocsStore(db) {
   return {
+    async updateContent(tx, current, expectedRevision, patch) {
+      const after = { ...current, ...patch, revision: expectedRevision + 1, updatedAt: new Date() };
+      const result = await db
+        .collection('documents')
+        .updateOne(
+          { _id: current._id, businessId: tx.businessId, revision: expectedRevision },
+          { $set: { ...patch, revision: after.revision, updatedAt: after.updatedAt } },
+          { session: tx.session },
+        );
+      ensure(result.modifiedCount === 1, 409, 'REVISION_CONFLICT', 'Conflicto de actualización');
+      tx.changes.push({ collection: 'documents', entityId: current._id, before: current, after });
+      return after;
+    },
     async containers(tx) {
       return db
         .collection('documents')

@@ -1,3 +1,4 @@
+import { contentPatchSchema, mergeContentPatch } from './content-patch.js';
 import { validateFile, docMetadata } from './files.js';
 import { containerSchema, locationSchema, uploadSchema } from './schemas.js';
 import { id } from '../../core/validation.js';
@@ -168,6 +169,32 @@ export function createDocsService({ commands, store }) {
         if (data.parentId !== undefined && data.parentId !== current.parentId)
           await parent(tx, data.parentId, data.kind);
         return tx.update('documents', documentId, data.revision, { ...data, editedBy: ctx.userId });
+      });
+    },
+    savePatch(ctx, documentId, input) {
+      id.parse(documentId);
+      const data = contentPatchSchema.parse(input);
+      return commands.run(ctx, 'docs.updated', { documentId, ...data }, async (tx) => {
+        const current = await tx.get('documents', documentId);
+        ensure(!current.archived, 409, 'DOC_ARCHIVED', 'Restaura la nota antes de editarla');
+        ensure(
+          ['document', 'board'].includes(current.kind),
+          422,
+          'DOC_KIND',
+          'Este elemento no admite contenido',
+        );
+        ensure(
+          current.revision === data.revision,
+          409,
+          'REVISION_CONFLICT',
+          'El registro cambió; recarga su versión',
+        );
+        const merged = mergeContentPatch(current, data.changes);
+        if (data.changes.blocks) await references(tx, merged);
+        const patch = { ...merged, editedBy: ctx.userId };
+        const row = await store.updateContent(tx, current, data.revision, patch);
+        // Idempotency and response store only the acknowledgement, never a second scene copy.
+        return { _id: row._id, revision: row.revision, updatedAt: row.updatedAt };
       });
     },
     archive(ctx, documentId, input) {

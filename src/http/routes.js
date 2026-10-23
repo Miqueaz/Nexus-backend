@@ -56,6 +56,9 @@ export function createRoutes(s) {
   write('patch', '/docs/:id/location', (r) => s.docs.relocate(r.context, r.params.id, r.body), {
     idempotent: true,
   });
+  write('patch', '/docs/:id/save', (r) => s.docs.savePatch(r.context, r.params.id, r.body), {
+    idempotent: true,
+  });
   read('/docs/:id', (r) => s.docs.get(r.context, r.params.id));
   write('post', '/docs', (r) => s.docs.create(r.context, r.body), financial);
   write('put', '/docs/:id', (r) => s.docs.update(r.context, r.params.id, r.body), {
