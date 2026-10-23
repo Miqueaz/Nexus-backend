@@ -13,6 +13,26 @@ const envSchema = z.object({
     .string()
     .regex(/^(?:[0-9]+-[a-zA-Z0-9_-]+\.apps\.googleusercontent\.com)?$/)
     .default(''),
+  PLATFORM_ADMIN_EMAILS: z
+    .string()
+    .default('')
+    .transform((s) =>
+      s
+        .split(',')
+        .map((v) => v.trim().toLowerCase())
+        .filter(Boolean),
+    )
+    .pipe(z.array(z.email())),
+  PLATFORM_ADMIN_USER_IDS: z
+    .string()
+    .default('')
+    .transform((s) =>
+      s
+        .split(',')
+        .map((v) => v.trim())
+        .filter(Boolean),
+    )
+    .pipe(z.array(z.uuid())),
   JWT_ISSUER: z.string().default('nexo-api'),
   JWT_AUDIENCE: z.string().default('nexo-app'),
   ACCESS_TOKEN_MINUTES: z.coerce.number().int().min(1).max(1440).default(30),
@@ -31,6 +51,8 @@ export function readConfig(env = process.env) {
     mongoDb: c.MONGO_DB,
     jwtSecret: c.JWT_SECRET,
     googleClientId: c.GOOGLE_CLIENT_ID,
+    platformAdminEmails: c.PLATFORM_ADMIN_EMAILS,
+    platformAdminUserIds: c.PLATFORM_ADMIN_USER_IDS,
     jwtIssuer: c.JWT_ISSUER,
     jwtAudience: c.JWT_AUDIENCE,
     tokenMinutes: c.ACCESS_TOKEN_MINUTES,

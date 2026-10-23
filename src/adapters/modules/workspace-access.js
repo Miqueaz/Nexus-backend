@@ -23,6 +23,7 @@ export const resourceModules = {
   calendar: 'calendar',
   projects: 'projects',
   history: 'history',
+  audit: 'history',
   'credit-lines': 'finance',
   'credit-statements': 'finance',
   'debt-payments': 'finance',
@@ -31,11 +32,12 @@ export const resourceModules = {
   'contact-lists': 'contacts',
 };
 export const allows = (member, module, write = false) =>
-  !member?.access ||
-  !module ||
-  (write
-    ? member.access.permissions[module] === 'write'
-    : ['read', 'write'].includes(member.access.permissions[module]));
+  (!module || !member?.platformEnabledModules || member.platformEnabledModules.includes(module)) &&
+  (!member?.access ||
+    !module ||
+    (write
+      ? member.access.permissions[module] === 'write'
+      : ['read', 'write'].includes(member.access.permissions[module])));
 export function assertAccess(member, module, write = false) {
   ensure(
     allows(member, module, write),
@@ -52,6 +54,9 @@ export function projectFilter(member, collection) {
 export function memberFields(member) {
   return {
     role: member.role,
+    ...(member.platformEnabledModules
+      ? { platformEnabledModules: member.platformEnabledModules }
+      : {}),
     ...(member.access ? { access: member.access } : {}),
     ...(member.organizationName ? { organizationName: member.organizationName } : {}),
   };
@@ -92,7 +97,11 @@ export function createWorkspaceAccess(db) {
   }
   function bind(tx, member) {
     tx.accessMember = member;
-    if (!member.access) return;
+    if (
+      !member.access &&
+      (!member.platformEnabledModules || member.platformEnabledModules.length === moduleIds.length)
+    )
+      return;
     const raw = {
       get: tx.get.bind(tx),
       find: tx.find.bind(tx),
@@ -100,7 +109,7 @@ export function createWorkspaceAccess(db) {
       update: tx.update.bind(tx),
     };
     const checkProject = (name, id) => {
-      if (name === 'projects' && member.access.projectScope.mode === 'selected')
+      if (name === 'projects' && member.access?.projectScope.mode === 'selected')
         ensure(
           member.access.projectScope.ids.includes(id),
           404,
@@ -119,9 +128,9 @@ export function createWorkspaceAccess(db) {
         : [];
     tx.insert = async (name, data, id) => {
       assertAccess(member, resourceModules[name], true);
-      if (name === 'projects')
+      if (name === 'projects' && member.access)
         ensure(
-          member.access.projectScope.mode === 'all',
+          member.access?.projectScope.mode === 'all',
           403,
           'PROJECT_SCOPE',
           'Este rol solo puede usar los proyectos asignados',

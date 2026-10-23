@@ -3,6 +3,7 @@ export const collections = [
   'organizations',
   'organizationMembers',
   'organizationRoles',
+  'platformSettings',
   'documents',
   'businesses',
   'memberships',
@@ -87,6 +88,7 @@ export async function ensureIndexes(db) {
   }
   for (const name of collections)
     await db.collection(name).createIndex({ businessId: 1, createdAt: -1, _id: -1 });
+  await db.collection('platformSettings').createIndex({ updatedAt: -1 });
   await db.collection('documents').createIndex({ businessId: 1, updatedAt: -1, _id: -1 });
   await db
     .collection('creditStatements')
@@ -141,6 +143,9 @@ export async function assertDatabasePrepared(db) {
     ['sales', { businessId: 1, quoteId: 1 }],
   ];
   try {
+    const platformIndexes = await db.collection('platformSettings').listIndexes().toArray();
+    if (!platformIndexes.some((i) => i.key.updatedAt === -1))
+      throw new Error('Missing platform settings index');
     const authLimitIndexes = await db.collection('authRateLimits').listIndexes().toArray();
     if (!authLimitIndexes.some((i) => i.key.expiresAt === 1 && i.expireAfterSeconds === 0))
       throw new Error('Missing auth rate limit TTL index');

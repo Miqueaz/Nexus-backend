@@ -282,3 +282,29 @@ Todas estas escrituras requieren Bearer e `Idempotency-Key`. Roles: `{name,descr
 Los permisos se resuelven desde Mongo en cada solicitud, sin incorporar privilegios al JWT. Se comprueban en comandos, consultas, snapshots, historial, Docs y calendario. Los proyectos seleccionados se filtran también en consultas históricas y no permiten crear nuevos proyectos. Auditoría y administración de accesos quedan protegidas. El propietario del espacio conserva acceso completo. Los accesos directos anteriores permanecen visibles para su revisión y pueden retirarse o reemplazarse por roles personalizados.
 
 La migración es aditiva: `npm run db:migrate` crea las colecciones e índices de organizaciones. Workers con `MONGO_AUTO_MIGRATE=true` prepara los índices al detectar su ausencia, sin borrar datos. Las mutaciones de organización usan transacciones, revisiones, idempotencia y auditoría; la asignación de accesos se serializa frente a retiros de miembros y cambios de roles.
+
+### Administración global y acceso
+
+`GET /auth/options` es público y devuelve los métodos de registro/inicio de sesión, módulos y funciones disponibles, con `Cache-Control: no-store`. No expone la lista de administradores.
+
+La identidad pública (`/auth/me`, sesión y vinculación de Google) incluye `platformRole: "admin"|"user"`. El administrador global se configura desde el servidor: `PLATFORM_ADMIN_EMAILS` permite únicamente cuentas con esa dirección ya verificada mediante Google (`googleSub` y `googleEmail`); registrarse con ese correo y contraseña no concede el rol. `PLATFORM_ADMIN_USER_IDS` permite asignar IDs existentes de forma explícita como alternativa operativa. El rol de propietario de un negocio y los roles de organización no conceden administración global. El administrador controla configuración y no obtiene acceso a datos de otros negocios.
+
+- `GET /administration/settings`: configuración y métodos disponibles para el administrador actual.
+- `PATCH /administration/settings`: requiere administrador, Bearer, `Idempotency-Key` y la revisión actual (0 antes del primer guardado).
+- `GET /administration/audit`: últimos 20 cambios de configuración, actor, fecha y revisión.
+
+El cuerpo de actualización es estricto:
+
+```json
+{
+  "revision": 0,
+  "registration": { "portal": true, "google": true },
+  "login": { "password": true, "google": true },
+  "enabledModules": ["docs", "finance", "inventory", "sales", "quotes", "projections", "contacts", "calendar", "projects", "history"],
+  "features": { "workspaceCreation": true, "organizationCreation": true, "docsUploads": true }
+}
+```
+
+Cerrar un método de registro impide crear usuarios nuevos por ese método y conserva el acceso de cuentas existentes. El inicio de sesión se controla por separado. El ajuste Solo Google desactiva registro e inicio por contraseña, activa Google y requiere identificación firmada, audiencia/emisor, vencimiento, nonce y correo verificado. Las cuentas existentes con contraseña necesitan vincular Google previamente. No se vinculan cuentas automáticamente por coincidencia de correo.
+
+Se rechazan configuraciones sin métodos de inicio, registro con un método de inicio desactivado, Google sin configurar o combinaciones que dejen al administrador actual sin acceso. Las sesiones existentes conservan su vencimiento. La política se consulta en Mongo en cada operación relevante, también en snapshots, historial, calendario y escrituras entre módulos; desactivar conserva los registros. La configuración, revisiones, idempotencia y auditoría se guardan en una sola transacción. Una migración aditiva crea `platformSettings` y su índice; `MONGO_AUTO_MIGRATE=true` prepara esta actualización en Workers.

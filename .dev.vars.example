@@ -4,3 +4,7 @@ MONGO_AUTO_MIGRATE="true"
 JWT_SECRET="REEMPLAZAR_CON_UNA_CLAVE_ALEATORIA_DE_AL_MENOS_48_CARACTERES"
 # Para el frontend local; producción se define en wrangler.jsonc.
 CORS_ORIGINS="http://localhost:5173"
+
+# Correos verificados por Google autorizados como administradores de Nexo.
+PLATFORM_ADMIN_EMAILS=
+PLATFORM_ADMIN_USER_IDS=

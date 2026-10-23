@@ -11,7 +11,8 @@ const credentials = z.strictObject({
   password: z.string().min(12).max(128),
 });
 const register = credentials.extend({ name: text });
-const publicUser = (u) => ({
+const publicUser = (u, platformRole = 'user') => ({
+  platformRole,
   _id: u._id,
   name: u.name,
   email: u.email,
@@ -23,7 +24,8 @@ const googleInput = z.strictObject({
   challengeId: z.uuid(),
 });
 const nonceHash = (nonce) => createHash('sha256').update(nonce).digest('hex');
-export async function createAuthService({ store, config, logger, googleIdentity }) {
+export async function createAuthService({ store, config, logger, googleIdentity, platform }) {
+  const toUser = (u) => publicUser(u, platform?.role(u) ?? 'user');
   const secret = new TextEncoder().encode(config.jwtSecret);
   // Comparación sin cuenta asociada; mantiene scrypt para usuarios inexistentes
   // sin ejecutar otra derivación al preparar cada solicitud.
@@ -57,7 +59,7 @@ export async function createAuthService({ store, config, logger, googleIdentity 
       .setExpirationTime(exp)
       .sign(secret);
     await security('auth.session.created', user._id, requestId, repository);
-    return { user: publicUser(user), accessToken, tokenType: 'Bearer', expiresIn: exp - now };
+    return { user: toUser(user), accessToken, tokenType: 'Bearer', expiresIn: exp - now };
   }
   async function googleChallenge(purpose, userId = null) {
     ensure(
@@ -110,6 +112,7 @@ export async function createAuthService({ store, config, logger, googleIdentity 
   }
   return {
     async register(input, requestId) {
+      await platform?.guardAuth('portalRegistration');
       const data = register.parse(input);
       const user = {
         _id: randomUUID(),
@@ -119,12 +122,14 @@ export async function createAuthService({ store, config, logger, googleIdentity 
         createdAt: new Date(),
       };
       return store.transaction(async (repository) => {
+        await platform?.guardAuth('portalRegistration', repository);
         await repository.insertUser(user);
         await security('auth.registered', user._id, requestId, repository);
         return issue(user, requestId, repository);
       });
     },
     async login(input, requestId) {
+      await platform?.guardAuth('passwordLogin');
       const data = credentials.parse(input);
       const user = await store.findUserByEmail(data.email);
       const valid = await verifyPassword(data.password, user?.passwordHash ?? dummy);
@@ -132,12 +137,17 @@ export async function createAuthService({ store, config, logger, googleIdentity 
         await security('auth.login.failed', null, requestId);
         ensure(false, 401, 'INVALID_CREDENTIALS', 'Credenciales incorrectas');
       }
-      return store.transaction((repository) => issue(user, requestId, repository));
+      return store.transaction(async (repository) => {
+        await platform?.guardAuth('passwordLogin', repository);
+        return issue(user, requestId, repository);
+      });
     },
-    googleChallenge() {
+    async googleChallenge() {
+      await platform?.guardAuth('googleLogin');
       return googleChallenge('login');
     },
     async googleLogin(input, requestId) {
+      await platform?.guardAuth('googleLogin');
       let data;
       try {
         data = await verifiedGoogle(input, 'login');
@@ -146,9 +156,11 @@ export async function createAuthService({ store, config, logger, googleIdentity 
         throw error;
       }
       return identityTransaction(async (repository) => {
+        await platform?.guardAuth('googleLogin', repository);
         await consume(repository, data, 'login');
         let user = await repository.findUserByGoogleSub(data.subject);
         if (!user) {
+          await platform?.guardAuth('googleRegistration', repository);
           ensure(
             !(await repository.findUserByEmail(data.email)),
             409,
@@ -208,7 +220,7 @@ export async function createAuthService({ store, config, logger, googleIdentity 
         );
         await repository.setGoogleIdentity(user._id, data.subject, data.email);
         await security('auth.google.linked', user._id, ctx.requestId, repository);
-        return publicUser({ ...user, googleSub: data.subject, googleEmail: data.email });
+        return toUser({ ...user, googleSub: data.subject, googleEmail: data.email });
       });
     },
     async authenticate(header) {
@@ -242,7 +254,7 @@ export async function createAuthService({ store, config, logger, googleIdentity 
     async me(ctx) {
       const u = await store.findUserById(ctx.userId);
       ensure(u, 401, 'INVALID_SESSION', 'Usuario no disponible');
-      return publicUser(u);
+      return toUser(u);
     },
     async logout(ctx) {
       return store.transaction(async (repository) => {

@@ -10,12 +10,21 @@ function stable(value) {
     );
   return value;
 }
-export function createCommands({ uow, idempotency, audit, logger, moduleAccess, workspaceAccess }) {
+export function createCommands({
+  uow,
+  idempotency,
+  audit,
+  logger,
+  moduleAccess,
+  workspaceAccess,
+  platform,
+}) {
   async function membership(tx, ctx, write = false, owner = false) {
     let member = (await tx.find('memberships', { userId: ctx.userId }))[0];
     ensure(member && member.role !== 'removed', 404, 'NOT_FOUND', 'Negocio no encontrado');
     if (workspaceAccess) {
       member = await workspaceAccess.resolve(member, tx.session);
+      if (platform) member = await platform.authorizeWorkspace(tx, ctx, member);
       workspaceAccess.assertRoute(member, ctx);
       workspaceAccess.bind(tx, member);
     }
@@ -54,6 +63,7 @@ export function createCommands({ uow, idempotency, audit, logger, moduleAccess, 
             return stored.response;
           }
         }
+        if (action === 'docs.file.uploaded') await platform?.assertFeature('docsUploads', tx);
         await moduleAccess.assertAction(tx, action);
         const response = await operation(tx);
         await audit.append(tx, ctx, action);

@@ -11,7 +11,7 @@ import {
   grantSchema,
   attachSchema,
 } from './schemas.js';
-export function createOrganizationService({ uow, store, audit, idempotency, logger }) {
+export function createOrganizationService({ uow, store, audit, idempotency, logger, platform }) {
   const one = (tx, n, f) => store.one(tx, n, f),
     find = (tx, n, f, options) => store.find(tx, n, f, options);
   async function owner(tx, ctx, orgId) {
@@ -76,6 +76,7 @@ export function createOrganizationService({ uow, store, audit, idempotency, logg
         'organization.created',
         data,
         async (tx) => {
+          await platform?.assertFeature('organizationCreation', tx);
           const org = await store.insert(
             tx,
             'organizations',

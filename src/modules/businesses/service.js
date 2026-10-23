@@ -4,7 +4,7 @@ import { z, id, revision, parsePatch } from '../../core/validation.js';
 import { preferencesSchema, personalPreferences } from './preferences.js';
 import { ensure } from '../../core/errors.js';
 import { businessCreateSchema, businessUpdateSchema, businessSettings } from './settings.js';
-export function createBusinessService({ uow, directory, audit, commands, idempotency }) {
+export function createBusinessService({ uow, directory, audit, commands, idempotency, platform }) {
   return {
     async list(ctx) {
       return (await directory.listForUser(ctx.userId)).map(businessSettings);
@@ -69,6 +69,7 @@ export function createBusinessService({ uow, directory, audit, commands, idempot
             return stored.response;
           }
         }
+        await platform?.assertFeature('workspaceCreation', tx);
         // El ID del agregado coincide con el límite de aislamiento del negocio.
         const business = await tx.insert('businesses', data, businessId);
         await tx.insert('memberships', { userId: ctx.userId, role: 'owner' });

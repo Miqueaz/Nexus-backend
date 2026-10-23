@@ -1035,3 +1035,73 @@ test('Workerd enforces organization roles, module isolation and revocation witho
   );
   assert.equal((await call('GET', owner.base + '/docs', undefined, token)).status, 404);
 });
+
+test('Workerd protects administration and applies registration and module settings globally without Durable Objects', async () => {
+  const owner = await fixture('192.0.2.45');
+  assert.equal(
+    (await call('GET', '/api/v1/administration/settings', undefined, owner.token)).status,
+    403,
+  );
+  const me = await call('GET', '/api/v1/auth/me', undefined, owner.token);
+  // Trusted fixture setup simulates an identity already verified by the Google adapter.
+  await db
+    .collection('users')
+    .updateOne(
+      { _id: me.data._id },
+      { $set: { googleSub: randomUUID(), googleEmail: 'mik.isaac.gl@gmail.com' } },
+    );
+  assert.equal(
+    (await call('GET', '/api/v1/auth/me', undefined, owner.token)).data.platformRole,
+    'admin',
+  );
+  const initial = await call('GET', '/api/v1/administration/settings', undefined, owner.token);
+  assert.equal(initial.status, 200);
+  const { revision, registration, login, features, enabledModules } = initial.data;
+  const changed = {
+    revision,
+    registration: { ...registration, portal: false },
+    login,
+    features,
+    enabledModules: enabledModules.filter((id) => !['finance', 'sales'].includes(id)),
+  };
+  const saved = await call(
+    'PATCH',
+    '/api/v1/administration/settings',
+    changed,
+    owner.token,
+    randomUUID(),
+  );
+  assert.equal(saved.status, 200, JSON.stringify(saved.data));
+  assert.equal(
+    (
+      await call(
+        'POST',
+        '/api/v1/auth/register',
+        { name: 'Blocked', email: randomUUID() + '@example.test', password: 'UnaClaveLarga123!' },
+        undefined,
+        undefined,
+        '192.0.2.46',
+      )
+    ).status,
+    403,
+  );
+  assert.equal((await call('GET', owner.base + '/wallets', undefined, owner.token)).status, 403);
+  const snapshot = await call('GET', owner.base + '/snapshot', undefined, owner.token);
+  assert.equal(snapshot.status, 200);
+  assert.deepEqual(snapshot.data.collections.wallets.data, []);
+  const options = await call('GET', '/api/v1/auth/options');
+  assert.equal(options.data.registration.portal, false);
+  assert.equal(options.data.login.password, true);
+  assert.equal(
+    (
+      await call(
+        'PATCH',
+        '/api/v1/administration/settings',
+        { revision: saved.data.revision, registration, login, features, enabledModules },
+        owner.token,
+        randomUUID(),
+      )
+    ).status,
+    200,
+  );
+});

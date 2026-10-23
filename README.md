@@ -185,3 +185,11 @@ Los bloques de documentos admiten `font` (`sans|serif|handwritten|mono`) y los n
 `PATCH /api/v1/businesses/:businessId/docs/:id/save` recibe `{revision, changes}`. Acepta metadatos editables, deltas de bloques/elementos y `boardPatch` con elementos, imágenes y apariencia modificados. Valida el documento combinado con los límites existentes y conserva pertenencia, permisos, revisiones, idempotencia y auditoría transaccional completa. Responde únicamente `{_id, revision, updatedAt}`. No hay migración adicional y el PUT anterior sigue operativo.
 
 El adaptador reutiliza la lectura del documento dentro de la transacción, evitando volver a consultar el mismo contenido antes del update. La copia de idempotencia almacena solo el acuse, no otro documento completo. La auditoría sigue conservando antes/después. `node --test test/docs-patch.test.js test/docs.test.js` incluye el benchmark local; los resultados no son un SLA de Cloudflare/Atlas ni prometen 10 ms por solicitud.
+
+### Administración global
+
+El módulo Administración permite controlar registro por portal/Google, inicio con contraseña/Google, módulos y funciones globales. Se abre desde la barra lateral o Mi perfil, solo para administradores. Las políticas se aplican en la API además de la interfaz y conservan los datos al desactivar módulos.
+
+Configura `PLATFORM_ADMIN_EMAILS` con los correos autorizados que tengan identidad verificada de Google. Registrar un correo sin verificar en el portal no concede el rol. `PLATFORM_ADMIN_USER_IDS` admite IDs existentes asignados explícitamente desde el servidor. En Workers se configuró `mik.isaac.gl@gmail.com` como administrador inicial; debe entrar con Google o vincular esa identidad a su cuenta existente. Un propietario de negocio no se convierte en administrador global.
+
+El preset Solo Google está disponible para elegirlo y guardarlo desde el panel; el despliegue conserva los métodos actuales hasta que se cambien. Desactivar registro y desactivar inicio de sesión son controles distintos. Se rechazan cambios que eliminen todas las formas de entrar o dejen al administrador sin un método utilizable. Cada cambio queda auditado con actor, fecha y revisión.

@@ -18,9 +18,10 @@ const actions = {
   events: 'calendar',
   projects: 'projects',
 };
-export function createModuleAccessAdapter() {
+export function createModuleAccessAdapter(platform) {
   return {
     async assertEnabled(tx, module) {
+      if (platform) platform.assertModule(await platform.read(tx), module);
       assertAccess(tx.accessMember, module);
       assertModuleEnabled(await tx.get('businesses', tx.businessId), module);
     },

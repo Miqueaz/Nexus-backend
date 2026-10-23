@@ -2,6 +2,7 @@
 export function createIdentityStore({ db, client }, session) {
   const options = session ? { session } : {};
   return {
+    session,
     findUserByEmail: (email) => db.collection('users').findOne({ email }, options),
     findUserById: (_id) => db.collection('users').findOne({ _id }, options),
     findUserByGoogleSub: (googleSub) => db.collection('users').findOne({ googleSub }, options),

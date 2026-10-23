@@ -1,3 +1,5 @@
+import { createPlatformService } from './modules/platform/service.js';
+import { createPlatformStore } from './adapters/mongo/platform-store.js';
 import { createOrganizationService } from './modules/organizations/service.js';
 import { createOrganizationStore } from './adapters/mongo/organization-store.js';
 import { createWorkspaceAccess } from './adapters/modules/workspace-access.js';
@@ -33,14 +35,23 @@ export async function createContainer({ client, db, config, logger, googleIdenti
   const uow = createUnitOfWork(client, db);
   const audit = createAuditAdapter(db);
   const idempotency = createIdempotencyStore(db);
+  const platform = createPlatformService({
+    store: createPlatformStore(db),
+    config,
+    uow,
+    audit,
+    idempotency,
+    logger,
+  });
   const workspaceAccess = createWorkspaceAccess(db);
   const commands = createCommands({
     workspaceAccess,
+    platform,
     uow,
     idempotency,
     audit,
     logger,
-    moduleAccess: createModuleAccessAdapter(),
+    moduleAccess: createModuleAccessAdapter(platform),
   });
   const finance = createFinanceAdapter();
   const financialManagement = createFinancialManagementAdapter();
@@ -48,7 +59,9 @@ export async function createContainer({ client, db, config, logger, googleIdenti
   const contacts = createContactsAdapter();
   const sales = createSalesService({ commands, inventory, finance, contacts });
   return {
+    platform,
     auth: await createAuthService({
+      platform,
       store: createIdentityStore({ db, client }),
       config,
       logger,
@@ -56,14 +69,16 @@ export async function createContainer({ client, db, config, logger, googleIdenti
     }),
     organizations: createOrganizationService({
       uow,
+      platform,
       store: createOrganizationStore(db),
       audit,
       idempotency,
       logger,
     }),
     businesses: createBusinessService({
+      platform,
       uow,
-      directory: createBusinessDirectory(db, workspaceAccess),
+      directory: createBusinessDirectory(db, workspaceAccess, platform),
       audit,
       commands,
       idempotency,

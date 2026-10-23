@@ -11,6 +11,7 @@
     "API_RUNTIME": "direct",
     "MONGO_DB": "nexo",
     "MONGO_AUTO_MIGRATE": "true",
+    "PLATFORM_ADMIN_EMAILS": "mik.isaac.gl@gmail.com",
     "GOOGLE_CLIENT_ID": "259045388211-p4fk2jnqhm40t1tqa91da7ic1qbn76ak.apps.googleusercontent.com",
     "JWT_ISSUER": "nexo-api",
     "JWT_AUDIENCE": "nexo-app",

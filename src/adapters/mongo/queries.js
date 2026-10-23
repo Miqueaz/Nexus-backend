@@ -299,6 +299,10 @@ export function createQueries({ db, commands }) {
           'Solo el propietario consulta la auditoría',
         );
         const filter = { businessId: ctx.businessId };
+        const blocked = Object.keys(resourceModules).filter(
+          (name) => !allows(tx.accessMember, resourceModules[name]),
+        );
+        if (blocked.length) filter.collection = { $nin: blocked };
         if (d.entityId) filter.entityId = d.entityId;
         if (d.before) filter.recordedAt = { $lt: new Date(d.before) };
         if (d.cursor) {

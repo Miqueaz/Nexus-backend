@@ -32,6 +32,12 @@ export function createRoutes(s) {
   add('post', prefix + '/auth/google/link', (r) => s.auth.googleLink(r.context, r.body), {
     limited: true,
   });
+  add('get', prefix + '/auth/options', () => s.platform.options(), { public: true });
+  add('get', prefix + '/administration/settings', (r) => s.platform.get(r.context));
+  add('patch', prefix + '/administration/settings', (r) => s.platform.update(r.context, r.body), {
+    idempotent: true,
+  });
+  add('get', prefix + '/administration/audit', (r) => s.platform.history(r.context));
   add('get', prefix + '/auth/me', (r) => s.auth.me(r.context));
   add('post', prefix + '/auth/logout', (r) => s.auth.logout(r.context));
   add('get', prefix + '/businesses', async (r) => ({ data: await s.businesses.list(r.context) }));
