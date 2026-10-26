@@ -101,6 +101,43 @@ async function item(f, stock = 10000) {
     }).expect(201)
   ).body.item;
 }
+test('Material consumption is independent of a fixed price, attributed to rolls, atomic and idempotent', async () => {
+  const f = await fixture(), w = await wallet(f, 0);
+  const list = (await call(f, 'post', '/inventory-lists', {name:'Vinil por trabajo',inventoryDefaults:{unit:'m',pricing:'fixed',tracking:'batches',packageSizeMilli:30000}}).expect(201)).body;
+  const material = (await call(f, 'post', '/items', {name:'Vinil blanco',listIds:[list._id],priceMinor:40000,costMinor:10000}).expect(201)).body;
+  assert.equal(material.unit,'m');assert.equal(material.stockConfig.pricing,'fixed');
+  const stocked=(await call(f,'post',`/items/${material._id}/adjustments`,{deltaMilli:60000,batchCount:2,batchLabel:'Vinil',reason:'Dos rollos de 30 m',revision:1}).expect(201)).body.item;
+  const sell=(cm,batchId)=>({walletId:w._id,lines:[{itemId:material._id,quantityMilli:1000,consumption:{quantityMilli:cm*1000,unit:'cm',...(batchId?{batchId}:{})}}]});
+  const key=randomUUID(),first=(await call(f,'post','/sales',sell(40,stocked.batches[0].id),key).expect(201)).body;
+  const duplicate=(await call(f,'post','/sales',sell(40,stocked.batches[0].id),key).expect(201)).body;
+  assert.equal(first._id,duplicate._id);assert.equal(first.totalMinor,40000);assert.equal(first.costMinor,4000);
+  assert.equal(first.lines[0].consumedQuantityMilli,400);assert.equal(first.lines[0].allocations[0].batchId,stocked.batches[0].id);
+  const second=(await call(f,'post','/sales',sell(55),randomUUID()).expect(201)).body;
+  assert.equal(second.totalMinor,40000);assert.equal(second.costMinor,5500);assert.equal(second.profitMinor,34500);
+  const current=()=>db.collection('items').findOne({_id:material._id});
+  assert.equal((await current()).stockMilli,59050);assert.equal((await current()).batches[0].remainingMilli,29050);
+  await call(f,'post','/sales',sell(5000,stocked.batches[0].id)).expect(422);
+  await call(f,'post','/sales',sell(1,randomUUID())).expect(422);
+  const incompatible=sell(1);incompatible.lines[0].consumption.unit='kg';await call(f,'post','/sales',incompatible).expect(422);
+  const noWallet=sell(10);noWallet.walletId=randomUUID();await call(f,'post','/sales',noWallet).expect(404);
+  assert.equal((await current()).stockMilli,59050);assert.equal(await db.collection('sales').countDocuments({businessId:f.business._id}),2);
+  assert.equal((await db.collection('wallets').findOne({_id:w._id})).balanceMinor,80000);
+  const movements=await db.collection('stockMovements').find({itemId:material._id,kind:'sale'}).toArray();assert.equal(movements.length,2);assert.equal(movements[0].unit,'m');
+  const now=await current();await call(f,'patch',`/items/${material._id}`,{unit:'cm',revision:now.revision}).expect(409);
+});
+test('Measured prices use converted consumption, automatic allocation spans rolls and quotes do not consume stock', async () => {
+  const f=await fixture(),w=await wallet(f,0);
+  const list=(await call(f,'post','/inventory-lists',{name:'Material por centímetro',inventoryDefaults:{unit:'m',priceUnit:'cm',pricing:'measure',tracking:'batches',packageSizeMilli:30000}}).expect(201)).body;
+  const material=(await call(f,'post','/items',{name:'Cable',listIds:[list._id],priceMinor:100,costMinor:2000}).expect(201)).body;
+  await call(f,'post',`/items/${material._id}/adjustments`,{deltaMilli:60000,batchCount:2,reason:'Dos rollos',revision:1}).expect(201);
+  const lines=[{itemId:material._id,quantityMilli:1000,consumption:{quantityMilli:30500,unit:'m'}}];
+  const quote=(await call(f,'post','/quotes',{title:'Trabajo',expiresOn:'2099-12-31',lines}).expect(201)).body;
+  assert.equal(quote.totalMinor,305000);assert.equal((await db.collection('items').findOne({_id:material._id})).stockMilli,60000);
+  const accepted=(await call(f,'post',`/quotes/${quote._id}/status`,{status:'accepted',revision:quote.revision}).expect(200)).body;
+  const sale=(await call(f,'post',`/quotes/${quote._id}/convert`,{walletId:w._id,revision:accepted.revision}).expect(201)).body;
+  assert.equal(sale.totalMinor,305000);assert.equal(sale.costMinor,61000);assert.equal(sale.lines[0].quantityMilli,3050000);assert.deepEqual(sale.lines[0].allocations.map(a=>a.quantityMilli),[30000,500]);
+  assert.equal((await db.collection('items').findOne({_id:material._id})).stockMilli,29500);
+});
 test('Bearer obligatorio, rechazo de token alterado y cierre de sesión revocable', async () => {
   await request(app).get('/api/v1/businesses').expect(401);
   const f = await fixture();

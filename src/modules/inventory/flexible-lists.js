@@ -1,3 +1,4 @@
+import { inventoryDefaults } from './materials.js';
 import {
   parsePatch,
   z,
@@ -12,7 +13,7 @@ import { ensure } from '../../core/errors.js';
 export function createListService({ commands, collection, entryCollection }) {
   return {
     create(ctx, input) {
-      const d = z.strictObject({ name: text, description: notes, fields }).parse(input);
+      const d = z.strictObject({ name: text, description: notes, fields, ...(collection === 'inventoryLists' ? { inventoryDefaults: inventoryDefaults.optional() } : {}) }).parse(input);
       return commands.run(ctx, `${collection}.created`, d, (tx) =>
         tx.insert(collection, { ...d, archived: false }),
       );
@@ -24,6 +25,7 @@ export function createListService({ commands, collection, entryCollection }) {
           name: text.optional(),
           description: notes.optional(),
           fields: fields.optional(),
+          ...(collection === 'inventoryLists' ? { inventoryDefaults: inventoryDefaults.optional() } : {}),
           archived: z.boolean().optional(),
           revision,
         }),

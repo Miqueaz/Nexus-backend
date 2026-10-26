@@ -2,6 +2,7 @@ import { z, id, text, notes, money, qty, discount, date } from '../../core/valid
 export const line = z
   .strictObject({
     itemId: id.optional(),
+    consumption: z.strictObject({ quantityMilli: qty, unit: text, batchId: id.optional() }).optional(),
     name: text.optional(),
     quantityMilli: qty,
     unitPriceMinor: money.optional(),

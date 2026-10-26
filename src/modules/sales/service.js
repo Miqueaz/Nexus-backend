@@ -1,17 +1,19 @@
+import { randomUUID } from 'node:crypto';
 import { saleSchema } from './schemas.js';
 import { totals } from '../../core/money.js';
 export function createSalesService({ commands, inventory, finance, contacts }) {
   async function createInTx(tx, input) {
     const customer = await contacts.assertCustomer(tx, input.customerId);
     const lines = await inventory.prepare(tx, input.lines);
+    const saleId = randomUUID();
+    await inventory.consume(tx, lines, saleId);
     const sale = await tx.insert('sales', {
       ...input,
       lines,
       customer: customer ?? null,
       ...totals(lines, input.discount),
       status: 'completed',
-    });
-    await inventory.consume(tx, lines, sale._id);
+    }, saleId);
     // Valida la cartera incluso si la venta termina en cero por el descuento.
     await finance.post(tx, {
       walletId: input.walletId,

@@ -308,3 +308,16 @@ El cuerpo de actualización es estricto:
 Cerrar un método de registro impide crear usuarios nuevos por ese método y conserva el acceso de cuentas existentes. El inicio de sesión se controla por separado. El ajuste Solo Google desactiva registro e inicio por contraseña, activa Google y requiere identificación firmada, audiencia/emisor, vencimiento, nonce y correo verificado. Las cuentas existentes con contraseña necesitan vincular Google previamente. No se vinculan cuentas automáticamente por coincidencia de correo.
 
 Se rechazan configuraciones sin métodos de inicio, registro con un método de inicio desactivado, Google sin configurar o combinaciones que dejen al administrador actual sin acceso. Las sesiones existentes conservan su vencimiento. La política se consulta en Mongo en cada operación relevante, también en snapshots, historial, calendario y escrituras entre módulos; desactivar conserva los registros. La configuración, revisiones, idempotencia y auditoría se guardan en una sola transacción. Una migración aditiva crea `platformSettings` y su índice; `MONGO_AUTO_MIGRATE=true` prepara esta actualización en Workers.
+
+
+### Inventario por medida y consumo variable
+
+Las listas de inventario aceptan `inventoryDefaults`: `unit`, `trackStock`, `sellable`, `pricing` (`unit`, `measure`, `fixed`), `tracking` (`aggregate`, `batches`), `priceUnit` y `packageSizeMilli`. Son valores iniciales para fichas nuevas; editar una lista no reinterpreta las fichas existentes. Las listas de contactos no aceptan esta configuración.
+
+Las fichas aceptan `stockConfig: { pricing, tracking, packageSizeMilli, priceUnit? }`. Cantidades y saldos se expresan en milésimas de la unidad base de la ficha; dinero en centavos. Las fichas antiguas conservan la venta por cantidad. No se puede cambiar la unidad o el modo de conteo con saldo pendiente.
+
+Una línea de venta/cotización puede incluir `consumption: { quantityMilli, unit, batchId? }`. En `fixed` el cobro es un trabajo (`quantityMilli=1000`) y el costo usa exclusivamente el consumo real. En `measure`, el cobro usa el consumo convertido a `priceUnit` (o la unidad base si se omite), y el costo usa la unidad de inventario. Es posible controlar rollos de 30 m y cobrar por cm. Unidades compatibles: mm/cm/m, g/kg, ml/l; m2 se registra directamente. Conversiones que pierdan precisión de tres decimales se rechazan.
+
+Las entradas de stock admiten `batchCount` (1–200, cantidad total repartida por igual) y `batchLabel`. Las salidas admiten `batchId`; si se omite, se consumen primero los rollos más antiguos, pudiendo repartir entre varios. El saldo, las asignaciones de rollos, la venta, el movimiento financiero y la auditoría se confirman en una sola transacción idempotente. Las cotizaciones no reservan existencias: se validan otra vez al convertir. Los rollos agotados se conservan en los movimientos y en el historial; se retiran del listado activo al dar otra entrada. Máximo 200 rollos activos por ficha.
+
+Los metadatos de espacio incluyen `capabilities.inventoryMaterials=1`. El cliente usa esta capacidad, sin peticiones adicionales, para no enviar campos nuevos durante despliegues graduales. No requiere una migración destructiva.

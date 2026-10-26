@@ -22,7 +22,7 @@ export function totals(lines, discount) {
     0,
   );
   const costMinor = lines.reduce(
-    (sum, l) => safeInteger(sum + lineAmount(l.unitCostMinor, l.quantityMilli)),
+    (sum, l) => safeInteger(sum + lineAmount(l.unitCostMinor, l.consumedQuantityMilli ?? l.quantityMilli)),
     0,
   );
   const discountMinor =

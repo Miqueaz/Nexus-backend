@@ -1,3 +1,4 @@
+import { convertQuantity, adjustBatches } from '../../modules/inventory/materials.js';
 import { ensure } from '../../core/errors.js';
 export function createInventoryAdapter() {
   return {
@@ -5,6 +6,7 @@ export function createInventoryAdapter() {
       const snapshots = [];
       for (const line of lines) {
         if (!line.itemId) {
+          ensure(!line.consumption, 422, 'MATERIAL_REQUIRED', 'Selecciona un artículo para consumir material');
           snapshots.push({
             ...line,
             unitCostMinor: line.unitCostMinor ?? 0,
@@ -20,10 +22,22 @@ export function createInventoryAdapter() {
           'NOT_SELLABLE',
           'Artículo archivado o no vendible',
         );
+        const pricing = item.stockConfig?.pricing || 'unit';
+        const priceUnit = pricing === 'measure' ? item.stockConfig?.priceUnit || item.unit : item.unit;
+        if (Object.hasOwn(line, 'trackStock')) ensure((line.stockUnit || line.unit) === item.unit && line.unit === priceUnit && (line.pricing || 'unit') === pricing, 409, 'QUOTE_MATERIAL_CHANGED', 'Cambió la unidad o forma de cobro del material; crea una cotización actualizada');
+        ensure(pricing === 'unit' || line.consumption, 422, 'CONSUMPTION_REQUIRED', 'Indica cuánto material usaste en este trabajo');
+        const consumedQuantityMilli = line.consumption ? convertQuantity(line.consumption.quantityMilli, line.consumption.unit, item.unit) : line.quantityMilli;
+        ensure(consumedQuantityMilli > 0, 422, 'INVALID_CONSUMPTION', 'El consumo debe ser mayor que cero');
+        ensure(pricing !== 'unit' || consumedQuantityMilli === line.quantityMilli, 422, 'INVALID_CONSUMPTION', 'En venta por pieza la cantidad vendida debe coincidir con el consumo');
+        const quantityMilli = pricing === 'fixed' ? 1000 : pricing === 'measure' ? convertQuantity(consumedQuantityMilli, item.unit, priceUnit) : line.quantityMilli;
         snapshots.push({
           ...line,
+          quantityMilli,
+          consumedQuantityMilli,
+          pricing,
           name: line.name ?? item.name,
-          unit: item.unit,
+          unit: priceUnit,
+          stockUnit: item.unit,
           unitPriceMinor: line.unitPriceMinor ?? item.priceMinor,
           unitCostMinor: item.costMinor,
           trackStock: item.trackStock,
@@ -37,16 +51,21 @@ export function createInventoryAdapter() {
         if (!line.itemId || !line.trackStock) continue;
         const item = await tx.get('items', line.itemId);
         ensure(
-          item.stockMilli >= line.quantityMilli,
+          item.stockMilli >= (line.consumedQuantityMilli ?? line.quantityMilli),
           422,
           'INSUFFICIENT_STOCK',
           `Existencias insuficientes: ${item.name}`,
         );
-        const stockMilli = item.stockMilli - line.quantityMilli;
-        await tx.update('items', item._id, item.revision, { stockMilli });
+        const consumed = line.consumedQuantityMilli ?? line.quantityMilli;
+        const stockMilli = item.stockMilli - consumed;
+        const {batches, allocations} = adjustBatches(item, -consumed, {batchId: line.consumption?.batchId});
+        line.allocations = allocations;
+        await tx.update('items', item._id, item.revision, { stockMilli, ...(batches ? {batches} : {}) });
         await tx.insert('stockMovements', {
           itemId: item._id,
-          deltaMilli: -line.quantityMilli,
+          deltaMilli: -consumed,
+          unit: item.unit,
+          ...(allocations.length ? {allocations} : {}),
           stockAfterMilli: stockMilli,
           kind: 'sale',
           reason: 'Venta',

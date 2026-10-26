@@ -1,9 +1,11 @@
+import { stockConfig, assertConfiguration, adjustBatches } from './materials.js';
 import { parsePatch, z, text, notes, money, id, revision, values } from '../../core/validation.js';
 import { ensure } from '../../core/errors.js';
 import { safeInteger } from '../../core/money.js';
 import { listIds, validateListValues } from './flexible-lists.js';
 const itemSchema = z.strictObject({
   name: text,
+  stockConfig: stockConfig.optional(),
   sku: z.string().trim().min(1).max(80).optional(),
   unit: text.default('unidad'),
   listIds,
@@ -21,7 +23,11 @@ export function createInventoryService({ commands }) {
       const d = itemSchema.parse(input);
       return commands.run(ctx, 'inventory.item.created', d, async (tx) => {
         await validateListValues(tx, 'inventoryLists', d.listIds, d.values);
-        return tx.insert('items', { ...d, stockMilli: 0, archived: false });
+        if (!d.stockConfig) {
+          for (const listId of d.listIds) { const list = await tx.get('inventoryLists', listId); if (!list.inventoryDefaults) continue; const { unit, trackStock, sellable, ...config } = list.inventoryDefaults; d.stockConfig = config; for (const [key,value] of Object.entries({unit,trackStock,sellable})) if (!Object.hasOwn(input,key)) d[key]=value; break; }
+        }
+        assertConfiguration(d);
+        return tx.insert('items', { ...d, ...(d.stockConfig?.tracking === 'batches' ? {batches: []} : {}), stockMilli: 0, archived: false });
       });
     },
     update(ctx, itemId, input) {
@@ -33,6 +39,8 @@ export function createInventoryService({ commands }) {
       return commands.run(ctx, 'inventory.item.updated', { itemId, ...d }, async (tx) => {
         const item = await tx.get('items', itemId);
         const next = { ...item, ...d };
+        assertConfiguration(next);
+        ensure(item.stockMilli === 0 || (next.unit === item.unit && (next.stockConfig?.tracking || 'aggregate') === (item.stockConfig?.tracking || 'aggregate')), 409, 'STOCK_CONFIGURATION_LOCKED', 'Ajusta las existencias a cero antes de cambiar la unidad o el control por rollo');
         ensure(
           next.trackStock || item.stockMilli === 0,
           422,
@@ -40,7 +48,7 @@ export function createInventoryService({ commands }) {
           'Ajusta las existencias a cero antes de desactivar su conteo',
         );
         await validateListValues(tx, 'inventoryLists', next.listIds, next.values);
-        return tx.update('items', itemId, d.revision, d);
+        return tx.update('items', itemId, d.revision, { ...d, ...(next.unit !== item.unit || (next.stockConfig?.tracking || 'aggregate') !== (item.stockConfig?.tracking || 'aggregate') ? {batches: []} : {}) });
       });
     },
     adjust(ctx, itemId, input) {
@@ -54,6 +62,9 @@ export function createInventoryService({ commands }) {
             .max(1e9)
             .refine((v) => v !== 0),
           reason: text,
+          batchId: id.optional(),
+          batchLabel: text.optional(),
+          batchCount: z.number().int().min(1).max(200).default(1),
           revision,
         })
         .parse(input);
@@ -67,13 +78,16 @@ export function createInventoryService({ commands }) {
         );
         const stockMilli = safeInteger(item.stockMilli + d.deltaMilli);
         ensure(stockMilli >= 0, 422, 'INSUFFICIENT_STOCK', 'Existencias insuficientes');
-        const updated = await tx.update('items', itemId, d.revision, { stockMilli });
+        const {batches, allocations} = adjustBatches(item, d.deltaMilli, d);
+        const updated = await tx.update('items', itemId, d.revision, { stockMilli, ...(batches ? {batches} : {}) });
         const movement = await tx.insert('stockMovements', {
           itemId,
           deltaMilli: d.deltaMilli,
           stockAfterMilli: stockMilli,
           reason: d.reason,
           kind: 'adjustment',
+          unit: item.unit,
+          ...(allocations.length ? {allocations} : {}),
         });
         return { item: updated, movement };
       });
