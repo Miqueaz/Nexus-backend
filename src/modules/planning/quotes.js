@@ -1,3 +1,4 @@
+import { commissionsSchema } from '../sales/commissions.js';
 import { z, id, revision } from '../../core/validation.js';
 import { ensure } from '../../core/errors.js';
 import { totals } from '../../core/money.js';
@@ -62,7 +63,9 @@ export function createQuotesService({ commands, inventory, contacts, sales }) {
     },
     convert(ctx, quoteId, input) {
       id.parse(quoteId);
-      const d = z.strictObject({ walletId: id, revision }).parse(input);
+      const d = z
+        .strictObject({ walletId: id, revision, commissions: commissionsSchema })
+        .parse(input);
       return commands.run(ctx, 'quote.converted', { quoteId, ...d }, async (tx) => {
         const q = await tx.get('quotes', quoteId);
         ensure(
@@ -84,6 +87,7 @@ export function createQuotesService({ commands, inventory, contacts, sales }) {
           discount: q.discount,
           description: q.notes,
           quoteId,
+          commissions: d.commissions,
         });
         await tx.update('quotes', quoteId, d.revision, { status: 'converted', saleId: sale._id });
         return sale;

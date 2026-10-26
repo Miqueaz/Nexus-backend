@@ -334,3 +334,14 @@ Los componentes deben estar activos, pertenecer al mismo negocio y contar existe
 Los consumos, la venta, el ingreso, la auditoría y la idempotencia comparten una transacción. Un fallo de stock, rollo o cartera revierte todos los efectos. Máximo 50 materiales por concepto y 200 por operación. El catálogo se incluye en `/snapshot` y respeta los permisos del módulo Ventas. La capacidad `capabilities.saleServices=1` permite al frontend activar estas opciones sin consultas por pulsación.
 
 Se agrega la colección `services` con índice de listado por negocio. `npm run db:migrate` prepara el índice sin borrar datos; Workers con `MONGO_AUTO_MIGRATE=true` lo prepara al detectar que falta.
+
+
+### Comisionistas dinámicos de venta
+
+`POST /businesses/:id/sales` y `POST /quotes/:id/convert` aceptan `commissions` (hasta 50 registros). Cada entrada contiene `{contactId? | name?, type: "percent" | "fixed", value, base: "sale" | "profit", description?}`. El porcentaje usa puntos base (1000 = 10%) y el monto fijo usa centavos. Con contacto se valida pertenencia/estado y se conserva su nombre como snapshot; también se admiten nombres libres y varias reglas por persona.
+
+`base=sale` toma `totalMinor` después de descuentos; `base=profit` toma `max(0, profitMinor)` antes de comisiones. Todos los porcentajes usan la misma base, sin componerlos sucesivamente. El redondeo se hace por comisión a centavos. La respuesta guarda `commissions[].{name,baseMinor,amountMinor}`, `commissionTotalMinor` y `netProfitMinor`. `profitMinor` conserva la ganancia bruta original. Una comisión fija puede producir pérdida; se muestra el neto negativo.
+
+`PATCH /sales/:saleId/commissions` requiere `{revision, commissions}` y clave de idempotencia. Permite agregar, quitar o cambiar comisionistas en una venta registrada usando sus importes originales. El cambio queda auditado y rechaza revisiones obsoletas. No repite consumo, ingreso ni venta y no modifica el total cobrado.
+
+Las comisiones son importes registrados, no pagos: no generan retiros de cartera. El desembolso real se registra por separado en Movimientos. Las escrituras y consultas siguen los permisos del módulo Ventas. No hay migración de datos ni colecciones adicionales. Las ventas anteriores se interpretan con cero comisión y su ganancia original. La capacidad `saleCommissions=1` activa el formulario en despliegues compatibles.

@@ -168,6 +168,25 @@ test('Service catalog consumes internal-only materials, preserves the service ch
   const accepted=(await call(f,'post','/quotes/'+quote._id+'/status',{status:'accepted',revision:quote.revision}).expect(200)).body;
   const conversion=(await call(f,'post','/quotes/'+quote._id+'/convert',{walletId:w._id,revision:accepted.revision}).expect(201)).body;assert.equal(conversion.costMinor,5500);assert.equal(conversion.lines[0].materials[0].allocations[0].batchId,stocked.batches[0].id);
 });
+test('Per-sale commissions use discounted revenue or gross profit, preserve contact snapshots and never withdraw cash',async()=>{
+ const f=await fixture(),w=await wallet(f,0);
+ const list=(await call(f,'post','/contact-lists',{name:'Comisionistas'}).expect(201)).body;
+ const contact=(await call(f,'post','/contacts',{name:'Ana',listIds:[list._id]}).expect(201)).body;
+ const commissions=[{contactId:contact._id,type:'percent',value:1000,base:'sale',description:'Referido'},{name:'Pedro',type:'fixed',value:2000},{name:'Técnico',type:'percent',value:1000,base:'profit'}];
+ const input={walletId:w._id,lines:[{name:'Polarizado',quantityMilli:1000,unitPriceMinor:40000,unitCostMinor:5500}],discount:{type:'fixed',value:4000},commissions};const key=randomUUID();
+ const sale=(await call(f,'post','/sales',input,key).expect(201)).body;
+ assert.equal(sale.totalMinor,36000);assert.equal(sale.profitMinor,30500);assert.equal(sale.commissionTotalMinor,8650);assert.equal(sale.netProfitMinor,21850);assert.deepEqual(sale.commissions.map(c=>c.amountMinor),[3600,2000,3050]);assert.equal(sale.commissions[0].name,'Ana');
+ assert.equal((await call(f,'post','/sales',input,key).expect(201)).body._id,sale._id);
+ assert.equal((await db.collection('wallets').findOne({_id:w._id})).balanceMinor,36000);assert.equal(await db.collection('movements').countDocuments({businessId:f.business._id}),1);
+ await call(f,'patch','/contacts/'+contact._id,{name:'Ana nueva',revision:contact.revision}).expect(200);assert.equal((await call(f,'get','/sales/'+sale._id).expect(200)).body.commissions[0].name,'Ana');
+ const bad={...input,commissions:[{name:'Inválido',type:'percent',value:10001}]};await call(f,'post','/sales',bad).expect(422);
+ const other=await fixture(),otherList=(await call(other,'post','/contact-lists',{name:'Privados'}).expect(201)).body,foreign=(await call(other,'post','/contacts',{name:'Ajeno',listIds:[otherList._id]}).expect(201)).body;
+ await call(f,'post','/sales',{...input,commissions:[{contactId:foreign._id,type:'fixed',value:100}]}).expect(404);assert.equal((await db.collection('wallets').findOne({_id:w._id})).balanceMinor,36000);
+ const quote=(await call(f,'post','/quotes',{title:'Con comisión al vender',lines:input.lines,discount:input.discount,expiresOn:'2099-12-31'}).expect(201)).body;
+ const accepted=(await call(f,'post','/quotes/'+quote._id+'/status',{status:'accepted',revision:quote.revision}).expect(200)).body;
+ const converted=(await call(f,'post','/quotes/'+quote._id+'/convert',{walletId:w._id,revision:accepted.revision,commissions}).expect(201)).body;assert.equal(converted.commissionTotalMinor,8650);assert.equal(converted.commissions[0].name,'Ana nueva');
+ const loss=(await call(f,'post','/sales',{walletId:w._id,lines:[{name:'Servicio con pérdida',quantityMilli:1000,unitPriceMinor:1000,unitCostMinor:2000}],commissions:[{name:'Sin ganancia',type:'percent',value:5000,base:'profit'},{name:'Fijo',type:'fixed',value:200}]}).expect(201)).body;assert.equal(loss.commissions[0].amountMinor,0);assert.equal(loss.netProfitMinor,-1200);
+});
 test('Bearer obligatorio, rechazo de token alterado y cierre de sesión revocable', async () => {
   await request(app).get('/api/v1/businesses').expect(401);
   const f = await fixture();

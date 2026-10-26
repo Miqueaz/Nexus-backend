@@ -1,3 +1,4 @@
+import { commissionsSchema } from './commissions.js';
 import { materialInput } from '../services/schemas.js';
 import { z, id, text, notes, money, qty, discount, date } from '../../core/validation.js';
 export const line = z
@@ -32,6 +33,7 @@ export const quoteSchema = z.strictObject({
   expiresOn: date,
 });
 export const saleSchema = z.strictObject({
+  commissions: commissionsSchema,
   walletId: id,
   customerId: id.optional(),
   lines: z.array(line).min(1).max(100),

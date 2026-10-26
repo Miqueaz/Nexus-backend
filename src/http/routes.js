@@ -160,6 +160,12 @@ export function createRoutes(s) {
   write('post', '/services', (r) => s.serviceCatalog.create(r.context, r.body), create);
   write('patch', '/services/:id', (r) => s.serviceCatalog.update(r.context, r.params.id, r.body));
   write('post', '/sales', (r) => s.sales.create(r.context, r.body), financial);
+  write(
+    'patch',
+    '/sales/:id/commissions',
+    (r) => s.sales.setCommissions(r.context, r.params.id, r.body),
+    { idempotent: true },
+  );
   write('post', '/quotes', (r) => s.quotes.create(r.context, r.body), create);
   write('put', '/quotes/:id', (r) => s.quotes.update(r.context, r.params.id, r.body));
   write('post', '/quotes/:id/status', (r) => s.quotes.status(r.context, r.params.id, r.body));
