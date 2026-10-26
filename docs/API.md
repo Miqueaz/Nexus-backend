@@ -321,3 +321,16 @@ Una línea de venta/cotización puede incluir `consumption: { quantityMilli, uni
 Las entradas de stock admiten `batchCount` (1–200, cantidad total repartida por igual) y `batchLabel`. Las salidas admiten `batchId`; si se omite, se consumen primero los rollos más antiguos, pudiendo repartir entre varios. El saldo, las asignaciones de rollos, la venta, el movimiento financiero y la auditoría se confirman en una sola transacción idempotente. Las cotizaciones no reservan existencias: se validan otra vez al convertir. Los rollos agotados se conservan en los movimientos y en el historial; se retiran del listado activo al dar otra entrada. Máximo 200 rollos activos por ficha.
 
 Los metadatos de espacio incluyen `capabilities.inventoryMaterials=1`. El cliente usa esta capacidad, sin peticiones adicionales, para no enviar campos nuevos durante despliegues graduales. No requiere una migración destructiva.
+
+
+### Servicios de venta y materiales de uso interno
+
+`GET /businesses/:id/services` y `GET /businesses/:id/services/:serviceId` consultan el catálogo del módulo Ventas. `POST /services` acepta `{name, description?, priceMinor, materials:[{itemId, quantityMilli, unit}]}`. `PATCH /services/:serviceId` permite editar estos campos o archivar/restaurar con `revision`. Las cantidades de la plantilla corresponden a un servicio; guardar una plantilla no consume stock.
+
+Una línea de venta acepta `{serviceId, quantityMilli, unitPriceMinor?, name?, materials?}`. Si se omiten los materiales, se usa la plantilla multiplicada exactamente por la cantidad de servicios. Si se envían, representan el consumo real total de esa línea y pueden incluir `batchId`. Una línea ocasional puede usar `{name, unitPriceMinor, quantityMilli, materials}` sin crear un registro en el catálogo. No se permite mezclar `itemId` con `serviceId` o `materials`.
+
+Los componentes deben estar activos, pertenecer al mismo negocio y contar existencias; **no necesitan ser vendibles**. El artículo interno sigue rechazándose en ventas directas. El precio se calcula sobre el servicio; el costo se calcula sobre los componentes realmente consumidos. Las líneas conservan sus materiales, costos y asignaciones de rollo como snapshot. Archivar o editar la plantilla no modifica ventas anteriores. Las cotizaciones conservan los consumos previstos y no reservan stock.
+
+Los consumos, la venta, el ingreso, la auditoría y la idempotencia comparten una transacción. Un fallo de stock, rollo o cartera revierte todos los efectos. Máximo 50 materiales por concepto y 200 por operación. El catálogo se incluye en `/snapshot` y respeta los permisos del módulo Ventas. La capacidad `capabilities.saleServices=1` permite al frontend activar estas opciones sin consultas por pulsación.
+
+Se agrega la colección `services` con índice de listado por negocio. `npm run db:migrate` prepara el índice sin borrar datos; Workers con `MONGO_AUTO_MIGRATE=true` lo prepara al detectar que falta.

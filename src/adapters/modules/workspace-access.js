@@ -17,6 +17,7 @@ export const resourceModules = {
   contacts: 'contacts',
   contactLists: 'contacts',
   sales: 'sales',
+  services: 'sales',
   quotes: 'quotes',
   projections: 'projections',
   events: 'calendar',

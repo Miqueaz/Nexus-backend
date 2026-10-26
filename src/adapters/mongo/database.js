@@ -15,6 +15,7 @@ export const collections = [
   'contactLists',
   'contacts',
   'sales',
+  'services',
   'quotes',
   'projects',
   'events',
@@ -143,6 +144,13 @@ export async function assertDatabasePrepared(db) {
     ['sales', { businessId: 1, quoteId: 1 }],
   ];
   try {
+    const serviceIndexes = await db.collection('services').listIndexes().toArray();
+    if (
+      !serviceIndexes.some(
+        (i) => i.key.businessId === 1 && i.key.createdAt === -1 && i.key._id === -1,
+      )
+    )
+      throw new Error('Missing service catalog index');
     const platformIndexes = await db.collection('platformSettings').listIndexes().toArray();
     if (!platformIndexes.some((i) => i.key.updatedAt === -1))
       throw new Error('Missing platform settings index');

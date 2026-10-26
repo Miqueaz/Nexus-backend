@@ -138,6 +138,36 @@ test('Measured prices use converted consumption, automatic allocation spans roll
   assert.equal(sale.totalMinor,305000);assert.equal(sale.costMinor,61000);assert.equal(sale.lines[0].quantityMilli,3050000);assert.deepEqual(sale.lines[0].allocations.map(a=>a.quantityMilli),[30000,500]);
   assert.equal((await db.collection('items').findOne({_id:material._id})).stockMilli,29500);
 });
+test('Service catalog consumes internal-only materials, preserves the service charge and rolls back every failed effect', async () => {
+  const f=await fixture(),w=await wallet(f,0),vinyl=await item(f,30000);
+  await call(f,'patch','/items/'+vinyl._id,{sellable:false,unit:'m',revision:vinyl.revision}).expect(409);
+  // A zero-balance item can be configured before receiving the roll.
+  const list=(await call(f,'post','/inventory-lists',{name:'Uso interno'}).expect(201)).body;
+  const material=(await call(f,'post','/items',{name:'Vinil interno',listIds:[list._id],sellable:false,unit:'m',costMinor:10000,stockConfig:{pricing:'unit',tracking:'batches',packageSizeMilli:30000}}).expect(201)).body;
+  const stocked=(await call(f,'post','/items/'+material._id+'/adjustments',{deltaMilli:30000,reason:'Rollo inicial',revision:1}).expect(201)).body.item;
+  const saved=(await call(f,'post','/services',{name:'Polarizado de carro',priceMinor:40000,materials:[{itemId:material._id,quantityMilli:40000,unit:'cm'}]}).expect(201)).body;
+  assert.equal((await db.collection('items').findOne({_id:material._id})).stockMilli,30000);
+  const viewer=await user();await call(f,'post','/members',{email:viewer.email,role:'viewer'}).expect(201);const readOnly={...f,token:viewer.token};await call(readOnly,'get','/services').expect(200);await call(readOnly,'post','/services',{name:'No permitido',priceMinor:100}).expect(403);await call(readOnly,'post','/sales',{walletId:w._id,lines:[{serviceId:saved._id,quantityMilli:1000}]}).expect(403);
+  await call(f,'post','/sales',{walletId:w._id,lines:[{itemId:material._id,quantityMilli:400}]}).expect(422);
+  const input={walletId:w._id,lines:[{serviceId:saved._id,quantityMilli:1000}]},key=randomUUID();
+  const first=(await call(f,'post','/sales',input,key).expect(201)).body;
+  assert.equal(first.totalMinor,40000);assert.equal(first.costMinor,4000);assert.equal(first.lines[0].name,'Polarizado de carro');assert.equal(first.lines[0].materials[0].allocations[0].batchId,stocked.batches[0].id);
+  assert.equal((await call(f,'post','/sales',input,key).expect(201)).body._id,first._id);
+  const actual={walletId:w._id,lines:[{serviceId:saved._id,quantityMilli:1000,materials:[{itemId:material._id,quantityMilli:55000,unit:'cm',batchId:stocked.batches[0].id}]}]};
+  const second=(await call(f,'post','/sales',actual).expect(201)).body;assert.equal(second.totalMinor,40000);assert.equal(second.costMinor,5500);assert.equal(second.profitMinor,34500);
+  const fail={...actual,walletId:randomUUID()};await call(f,'post','/sales',fail).expect(404);
+  const noStock=structuredClone(actual);noStock.lines[0].materials[0].quantityMilli=4000000;await call(f,'post','/sales',noStock).expect(422);
+  const cross=await fixture(),foreign=await item(cross);await call(cross,'get','/services/'+saved._id).expect(404);const foreignInput=structuredClone(actual);foreignInput.lines[0].materials[0].itemId=foreign._id;await call(f,'post','/sales',foreignInput).expect(404);
+  assert.equal((await db.collection('items').findOne({_id:material._id})).stockMilli,29050);assert.equal((await db.collection('wallets').findOne({_id:w._id})).balanceMinor,80000);
+  const audit=await db.collection('stockMovements').find({itemId:material._id,kind:'sale'}).toArray();assert.equal(audit.length,2);assert.equal(audit[0].serviceId,saved._id);assert.match(audit[0].reason,/Polarizado/);
+  const archived=(await call(f,'patch','/services/'+saved._id,{archived:true,revision:saved.revision}).expect(200)).body;await call(f,'post','/sales',input).expect(422);
+  assert.equal((await call(f,'get','/sales/'+first._id).expect(200)).body.lines[0].materials[0].name,'Vinil interno');
+  await call(f,'patch','/services/'+saved._id,{archived:false,revision:archived.revision}).expect(200);
+  const free=(await call(f,'post','/sales',{walletId:w._id,lines:[{name:'Polarizado ocasional',unitPriceMinor:40000,quantityMilli:1000,materials:[{itemId:material._id,quantityMilli:40000,unit:'cm'}]}]}).expect(201)).body;assert.equal(free.totalMinor,40000);assert.equal(free.costMinor,4000);
+  const quote=(await call(f,'post','/quotes',{title:'Polarizado',expiresOn:'2099-12-31',lines:[{serviceId:saved._id,quantityMilli:1000,materials:[{itemId:material._id,quantityMilli:55000,unit:'cm',batchId:stocked.batches[0].id}]}]}).expect(201)).body;
+  const accepted=(await call(f,'post','/quotes/'+quote._id+'/status',{status:'accepted',revision:quote.revision}).expect(200)).body;
+  const conversion=(await call(f,'post','/quotes/'+quote._id+'/convert',{walletId:w._id,revision:accepted.revision}).expect(201)).body;assert.equal(conversion.costMinor,5500);assert.equal(conversion.lines[0].materials[0].allocations[0].batchId,stocked.batches[0].id);
+});
 test('Bearer obligatorio, rechazo de token alterado y cierre de sesión revocable', async () => {
   await request(app).get('/api/v1/businesses').expect(401);
   const f = await fixture();
@@ -1125,7 +1155,7 @@ test('Snapshot agrupa lecturas con aislamiento, historial y paginación sin trun
   const current = (await call(f, 'get', '/snapshot').expect(200)).body;
   assert.equal(current.business._id, f.business._id);
   assert.equal(current.business.role, 'owner');
-  assert.equal(Object.keys(current.collections).length, 16);
+  assert.equal(Object.keys(current.collections).length, 17);
   assert.equal(current.collections.wallets.data[0].balanceMinor, 10100);
   assert.deepEqual(
     current.collections.movements,

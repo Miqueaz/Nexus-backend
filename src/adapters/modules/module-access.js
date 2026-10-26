@@ -11,6 +11,7 @@ const actions = {
   inventory: 'inventory',
   inventoryLists: 'inventory',
   sale: 'sales',
+  serviceCatalog: 'sales',
   quote: 'quotes',
   projection: 'projections',
   contact: 'contacts',

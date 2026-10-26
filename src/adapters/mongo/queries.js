@@ -18,6 +18,7 @@ const readable = new Set([
   'contactLists',
   'contacts',
   'sales',
+  'services',
   'quotes',
   'projects',
   'events',

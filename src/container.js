@@ -1,3 +1,5 @@
+import { createServiceCatalog } from './modules/services/service.js';
+import { createSaleLinesAdapter } from './adapters/modules/sale-lines.js';
 import { createPlatformService } from './modules/platform/service.js';
 import { createPlatformStore } from './adapters/mongo/platform-store.js';
 import { createOrganizationService } from './modules/organizations/service.js';
@@ -56,8 +58,9 @@ export async function createContainer({ client, db, config, logger, googleIdenti
   const finance = createFinanceAdapter();
   const financialManagement = createFinancialManagementAdapter();
   const inventory = createInventoryAdapter();
+  const saleLines = createSaleLinesAdapter(inventory);
   const contacts = createContactsAdapter();
-  const sales = createSalesService({ commands, inventory, finance, contacts });
+  const sales = createSalesService({ commands, inventory: saleLines, finance, contacts });
   return {
     platform,
     auth: await createAuthService({
@@ -97,9 +100,10 @@ export async function createContainer({ client, db, config, logger, googleIdenti
     }),
     contacts: createContactsService({ commands }),
     sales,
+    serviceCatalog: createServiceCatalog({ commands, inventory }),
     quotes: createQuotesService({
       commands,
-      inventory,
+      inventory: saleLines,
       contacts,
       sales: createSalesAdapter(sales),
     }),
