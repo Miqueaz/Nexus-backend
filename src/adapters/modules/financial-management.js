@@ -3,7 +3,11 @@ import { ensure } from '../../core/errors.js';
 // Comparte la consulta de obligaciones sin acoplar los servicios entre sí.
 export function createFinancialManagementAdapter() {
   const hasPendingDebt = (debts) =>
-    debts.some((d) => d.principalMinor + d.feeMinor - d.paidPrincipalMinor - d.paidFeeMinor > 0);
+    debts.some(
+      (d) =>
+        !d.correctionStatus &&
+        d.principalMinor + d.feeMinor - d.paidPrincipalMinor - d.paidFeeMinor > 0,
+    );
   return {
     async assertWalletEmpty(tx, wallet) {
       ensure(

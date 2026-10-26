@@ -111,7 +111,12 @@ export const businessUpdateSchema = z
 export function businessSettings(business) {
   return {
     ...business,
-    capabilities: { inventoryMaterials: 1, saleServices: 1, saleCommissions: 1 },
+    capabilities: {
+      inventoryMaterials: 1,
+      saleServices: 1,
+      saleCommissions: 1,
+      movementCorrections: 1,
+    },
     kind: business.kind ?? 'business',
     description: business.description ?? '',
     color: business.color ?? '#164e3d',

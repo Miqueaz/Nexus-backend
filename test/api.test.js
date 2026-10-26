@@ -73,6 +73,278 @@ function call(f, method, path, body, key = randomUUID()) {
   if (body) r = r.send(body);
   return r.set('Idempotency-Key', key);
 }
+
+test('Movement corrections preserve originals, audit reasons, exact balances and idempotent history', async () => {
+  const f = await fixture(),
+    w = await wallet(f, 100000),
+    other = await wallet(f, 0);
+  const original = (
+    await call(f, 'post', '/movements', {
+      walletId: w._id,
+      kind: 'expense',
+      amountMinor: 10000,
+      category: 'Material',
+      description: 'Compra original',
+      occurredOn: '2026-01-02',
+    }).expect(201)
+  ).body;
+  const before = original.createdAt,
+    key = randomUUID(),
+    body = {
+      revision: original.revision,
+      reason: 'Se capturaron 100 en lugar de 125.50',
+      replacement: {
+        walletId: other._id,
+        kind: 'expense',
+        amountMinor: 12550,
+        category: 'Material',
+        description: 'Compra corregida',
+        occurredOn: '2026-01-03',
+      },
+    };
+  // Moving an expense to an empty account fails atomically.
+  await call(f, 'post', `/movements/${original._id}/corrections`, body).expect(422);
+  assert.equal((await call(f, 'get', '/wallets/' + w._id).expect(200)).body.balanceMinor, 90000);
+  body.replacement.walletId = w._id;
+  const changed = (
+    await call(f, 'post', `/movements/${original._id}/corrections`, body, key).expect(201)
+  ).body;
+  const again = (
+    await call(f, 'post', `/movements/${original._id}/corrections`, body, key).expect(201)
+  ).body;
+  assert.equal(again.adjustments[0]._id, changed.adjustments[0]._id);
+  assert.equal(changed.original.amountMinor, -10000);
+  assert.equal(changed.original.description, 'Compra original');
+  assert.equal(changed.original.occurredOn, '2026-01-02');
+  assert.equal(changed.original.createdAt, before);
+  assert.equal(changed.original.correctionStatus, 'edited');
+  assert.equal(changed.reversals[0].amountMinor, 10000);
+  assert.equal(changed.adjustments[0].amountMinor, -12550);
+  assert.equal((await call(f, 'get', '/wallets/' + w._id).expect(200)).body.balanceMinor, 87450);
+  const adjusted = changed.adjustments[0];
+  await call(f, 'post', `/movements/${original._id}/corrections`, body).expect(409);
+  const cancelled = (
+    await call(f, 'post', `/movements/${adjusted._id}/cancellations`, {
+      revision: adjusted.revision,
+      reason: 'Compra no realizada',
+    }).expect(201)
+  ).body;
+  assert.equal(cancelled.original.correctionStatus, 'cancelled');
+  assert.equal(cancelled.adjustments.length, 0);
+  assert.equal((await call(f, 'get', '/wallets/' + w._id).expect(200)).body.balanceMinor, 100000);
+  const history = (await call(f, 'get', `/movements/${original._id}/changes`).expect(200)).body;
+  assert.equal(history.rows.length, 2);
+  assert.equal(history.rows[1].changeReason, 'Compra no realizada');
+  const audit = await db
+    .collection('audit')
+    .findOne({
+      businessId: f.business._id,
+      action: 'finance.movement.corrected',
+      entityId: original._id,
+    });
+  assert.equal(audit.actorId, f.id);
+  assert.equal(audit.after.changeReason, body.reason);
+  assert.equal(audit.before.amountMinor, audit.after.amountMinor);
+  const all = await db
+    .collection('movements')
+    .find({ businessId: f.business._id, walletId: w._id })
+    .toArray();
+  assert.equal(
+    all.reduce((n, r) => n + r.amountMinor, 0),
+    100000,
+  );
+});
+
+test('Transfers adjust both sides atomically and history works from the receiving entry', async () => {
+  const f = await fixture(),
+    a = await wallet(f, 10000),
+    b = await wallet(f, 0);
+  const transfer = (
+    await call(f, 'post', '/transfers', {
+      fromWalletId: a._id,
+      toWalletId: b._id,
+      amountMinor: 5000,
+      description: 'Entre cuentas',
+    }).expect(201)
+  ).body;
+  const body = {
+    revision: 1,
+    reason: 'Importe real 70',
+    replacement: {
+      walletId: a._id,
+      toWalletId: b._id,
+      kind: 'transfer',
+      amountMinor: 7000,
+      category: 'transfer',
+      description: 'Corrección transferencia',
+      occurredOn: '2026-01-01',
+    },
+  };
+  const result = (
+    await call(f, 'post', `/movements/${transfer.to._id}/corrections`, body).expect(201)
+  ).body;
+  assert.equal(result.reversals.length, 2);
+  assert.equal(result.adjustments.length, 2);
+  assert.equal((await call(f, 'get', '/wallets/' + a._id).expect(200)).body.balanceMinor, 3000);
+  assert.equal((await call(f, 'get', '/wallets/' + b._id).expect(200)).body.balanceMinor, 7000);
+  const h = (await call(f, 'get', `/movements/${transfer.to._id}/changes`).expect(200)).body;
+  assert.equal(h.rootId, transfer.from._id);
+  assert.equal(h.rows.length, 2);
+  await call(f, 'post', `/movements/${result.adjustments[1]._id}/cancellations`, {
+    revision: 1,
+    reason: 'Transferencia anulada',
+  }).expect(201);
+  assert.equal((await call(f, 'get', '/wallets/' + a._id).expect(200)).body.balanceMinor, 10000);
+  assert.equal((await call(f, 'get', '/wallets/' + b._id).expect(200)).body.balanceMinor, 0);
+});
+
+test('Movement corrections guard ownership, viewer roles, stale versions, linked operations and concurrent submissions', async () => {
+  const f = await fixture(),
+    w = await wallet(f, 10000),
+    other = await fixture();
+  const r = (
+    await call(f, 'post', '/movements', {
+      walletId: w._id,
+      kind: 'income',
+      amountMinor: 5000,
+      category: 'Ingreso',
+      description: 'Original',
+    }).expect(201)
+  ).body;
+  const endpoint = `/movements/${r._id}/cancellations`,
+    body = { revision: 1, reason: 'Duplicado' };
+  await call(other, 'post', endpoint, body).expect(404);
+  await call(other, 'get', `/movements/${r._id}/changes`).expect(404);
+  const viewer = await user();
+  await call(f, 'post', '/members', { email: viewer.email, role: 'viewer' }).expect(201);
+  await call({ ...f, token: viewer.token }, 'post', endpoint, body).expect(403);
+  await call(f, 'post', endpoint, { ...body, reason: ' ' }).expect(422);
+  const opening = await db
+    .collection('movements')
+    .findOne({ businessId: f.business._id, kind: 'opening' });
+  await call(f, 'post', `/movements/${opening._id}/cancellations`, body).expect(422);
+  const results = await Promise.all([
+    call(f, 'post', endpoint, body),
+    call(f, 'post', endpoint, body),
+  ]);
+  assert.deepEqual(results.map((x) => x.status).sort(), [201, 409]);
+  assert.equal((await call(f, 'get', '/wallets/' + w._id).expect(200)).body.balanceMinor, 10000);
+});
+
+test('Unpaid credit purchases retain original schedules and a complete adjustment chain without moving cash', async () => {
+  const f = await fixture(),
+    w = await wallet(f, 10000),
+    line = (
+      await call(f, 'post', '/credit-lines', { name: 'Tarjeta', limitMinor: 100000 }).expect(201)
+    ).body;
+  const old = (
+    await call(f, 'post', '/debts', {
+      name: 'Compra',
+      kind: 'deferred',
+      creditLineId: line._id,
+      principalMinor: 30000,
+      feeMinor: 1000,
+      terms: 3,
+      firstDueOn: '2027-01-01',
+      mode: 'monthly',
+    }).expect(201)
+  ).body;
+  const body = {
+    revision: 1,
+    reason: 'Capital correcto 250',
+    replacement: {
+      name: 'Compra ajustada',
+      creditLineId: line._id,
+      principalMinor: 25000,
+      feeMinor: 1000,
+      terms: 2,
+      firstDueOn: '2027-02-01',
+      mode: 'monthly',
+      category: 'Materiales',
+      notes: 'Factura corregida',
+    },
+  };
+  const result = (await call(f, 'post', `/debts/${old._id}/corrections`, body).expect(201)).body;
+  assert.equal(result.original.status, 'cancelled');
+  assert.equal(result.original.correctionStatus, 'edited');
+  assert.deepEqual(result.original.schedule, old.schedule);
+  assert.equal(result.adjusted.principalMinor, 25000);
+  let balances = (await call(f, 'get', '/credit-lines/balances').expect(200)).body;
+  assert.equal(balances[0].usedMinor, 26000);
+  const history = (await call(f, 'get', `/debts/${result.adjusted._id}/changes`).expect(200)).body;
+  assert.equal(history.rows.length, 2);
+  await call(f, 'post', `/debts/${result.adjusted._id}/cancellations`, {
+    revision: 1,
+    reason: 'Devolución de compra',
+  }).expect(201);
+  balances = (await call(f, 'get', '/credit-lines/balances').expect(200)).body;
+  assert.equal(balances[0].usedMinor, 0);
+  assert.equal((await call(f, 'get', '/wallets/' + w._id).expect(200)).body.balanceMinor, 10000);
+  await call(f, 'patch', '/credit-lines/' + line._id, {
+    revision: balances[0].revision,
+    archived: true,
+  }).expect(200);
+});
+
+test('Credit corrections reject paid purchases and closed periods, and preserve the original on capacity errors', async () => {
+  const f = await fixture(),
+    w = await wallet(f, 100000),
+    line = (
+      await call(f, 'post', '/credit-lines', { name: 'Tarjeta', limitMinor: 100000 }).expect(201)
+    ).body;
+  const make = async () =>
+    (
+      await call(f, 'post', '/debts', {
+        name: 'Compra',
+        kind: 'deferred',
+        creditLineId: line._id,
+        principalMinor: 30000,
+        terms: 1,
+        firstDueOn: '2027-01-01',
+        mode: 'monthly',
+      }).expect(201)
+    ).body;
+  const paid = await make();
+  await call(f, 'post', `/debts/${paid._id}/payments`, {
+    revision: 1,
+    walletId: w._id,
+    amountMinor: 1000,
+    description: 'Abono',
+  }).expect(201);
+  await call(f, 'post', `/debts/${paid._id}/cancellations`, {
+    revision: 2,
+    reason: 'Error',
+  }).expect(409);
+  const old = await make();
+  await call(f, 'post', `/debts/${old._id}/corrections`, {
+    revision: 1,
+    reason: 'Excede cupo',
+    replacement: {
+      name: 'Exceso',
+      creditLineId: line._id,
+      principalMinor: 100000,
+      feeMinor: 0,
+      terms: 1,
+      firstDueOn: '2027-01-01',
+      mode: 'monthly',
+      category: 'General',
+      notes: '',
+    },
+  }).expect(422);
+  assert.equal((await call(f, 'get', '/debts/' + old._id).expect(200)).body.status, 'active');
+  const cutoff = new Date().toISOString().slice(0, 10);
+  await call(f, 'post', `/credit-lines/${line._id}/statements`, {
+    revision: (await call(f, 'get', '/credit-lines/' + line._id).expect(200)).body.revision,
+    periodStartOn: cutoff,
+    cutoffOn: cutoff,
+    dueOn: '2027-01-01',
+    revolvingMinor: 59000,
+  }).expect(201);
+  await call(f, 'post', `/debts/${old._id}/cancellations`, {
+    revision: 1,
+    reason: 'Período cerrado',
+  }).expect(409);
+});
 async function wallet(f, openingBalanceMinor = 100000) {
   return (await call(f, 'post', '/wallets', { name: 'Caja', openingBalanceMinor }).expect(201))
     .body;
@@ -102,90 +374,412 @@ async function item(f, stock = 10000) {
   ).body.item;
 }
 test('Material consumption is independent of a fixed price, attributed to rolls, atomic and idempotent', async () => {
-  const f = await fixture(), w = await wallet(f, 0);
-  const list = (await call(f, 'post', '/inventory-lists', {name:'Vinil por trabajo',inventoryDefaults:{unit:'m',pricing:'fixed',tracking:'batches',packageSizeMilli:30000}}).expect(201)).body;
-  const material = (await call(f, 'post', '/items', {name:'Vinil blanco',listIds:[list._id],priceMinor:40000,costMinor:10000}).expect(201)).body;
-  assert.equal(material.unit,'m');assert.equal(material.stockConfig.pricing,'fixed');
-  const stocked=(await call(f,'post',`/items/${material._id}/adjustments`,{deltaMilli:60000,batchCount:2,batchLabel:'Vinil',reason:'Dos rollos de 30 m',revision:1}).expect(201)).body.item;
-  const sell=(cm,batchId)=>({walletId:w._id,lines:[{itemId:material._id,quantityMilli:1000,consumption:{quantityMilli:cm*1000,unit:'cm',...(batchId?{batchId}:{})}}]});
-  const key=randomUUID(),first=(await call(f,'post','/sales',sell(40,stocked.batches[0].id),key).expect(201)).body;
-  const duplicate=(await call(f,'post','/sales',sell(40,stocked.batches[0].id),key).expect(201)).body;
-  assert.equal(first._id,duplicate._id);assert.equal(first.totalMinor,40000);assert.equal(first.costMinor,4000);
-  assert.equal(first.lines[0].consumedQuantityMilli,400);assert.equal(first.lines[0].allocations[0].batchId,stocked.batches[0].id);
-  const second=(await call(f,'post','/sales',sell(55),randomUUID()).expect(201)).body;
-  assert.equal(second.totalMinor,40000);assert.equal(second.costMinor,5500);assert.equal(second.profitMinor,34500);
-  const current=()=>db.collection('items').findOne({_id:material._id});
-  assert.equal((await current()).stockMilli,59050);assert.equal((await current()).batches[0].remainingMilli,29050);
-  await call(f,'post','/sales',sell(5000,stocked.batches[0].id)).expect(422);
-  await call(f,'post','/sales',sell(1,randomUUID())).expect(422);
-  const incompatible=sell(1);incompatible.lines[0].consumption.unit='kg';await call(f,'post','/sales',incompatible).expect(422);
-  const noWallet=sell(10);noWallet.walletId=randomUUID();await call(f,'post','/sales',noWallet).expect(404);
-  assert.equal((await current()).stockMilli,59050);assert.equal(await db.collection('sales').countDocuments({businessId:f.business._id}),2);
-  assert.equal((await db.collection('wallets').findOne({_id:w._id})).balanceMinor,80000);
-  const movements=await db.collection('stockMovements').find({itemId:material._id,kind:'sale'}).toArray();assert.equal(movements.length,2);assert.equal(movements[0].unit,'m');
-  const now=await current();await call(f,'patch',`/items/${material._id}`,{unit:'cm',revision:now.revision}).expect(409);
+  const f = await fixture(),
+    w = await wallet(f, 0);
+  const list = (
+    await call(f, 'post', '/inventory-lists', {
+      name: 'Vinil por trabajo',
+      inventoryDefaults: {
+        unit: 'm',
+        pricing: 'fixed',
+        tracking: 'batches',
+        packageSizeMilli: 30000,
+      },
+    }).expect(201)
+  ).body;
+  const material = (
+    await call(f, 'post', '/items', {
+      name: 'Vinil blanco',
+      listIds: [list._id],
+      priceMinor: 40000,
+      costMinor: 10000,
+    }).expect(201)
+  ).body;
+  assert.equal(material.unit, 'm');
+  assert.equal(material.stockConfig.pricing, 'fixed');
+  const stocked = (
+    await call(f, 'post', `/items/${material._id}/adjustments`, {
+      deltaMilli: 60000,
+      batchCount: 2,
+      batchLabel: 'Vinil',
+      reason: 'Dos rollos de 30 m',
+      revision: 1,
+    }).expect(201)
+  ).body.item;
+  const sell = (cm, batchId) => ({
+    walletId: w._id,
+    lines: [
+      {
+        itemId: material._id,
+        quantityMilli: 1000,
+        consumption: { quantityMilli: cm * 1000, unit: 'cm', ...(batchId ? { batchId } : {}) },
+      },
+    ],
+  });
+  const key = randomUUID(),
+    first = (await call(f, 'post', '/sales', sell(40, stocked.batches[0].id), key).expect(201))
+      .body;
+  const duplicate = (
+    await call(f, 'post', '/sales', sell(40, stocked.batches[0].id), key).expect(201)
+  ).body;
+  assert.equal(first._id, duplicate._id);
+  assert.equal(first.totalMinor, 40000);
+  assert.equal(first.costMinor, 4000);
+  assert.equal(first.lines[0].consumedQuantityMilli, 400);
+  assert.equal(first.lines[0].allocations[0].batchId, stocked.batches[0].id);
+  const second = (await call(f, 'post', '/sales', sell(55), randomUUID()).expect(201)).body;
+  assert.equal(second.totalMinor, 40000);
+  assert.equal(second.costMinor, 5500);
+  assert.equal(second.profitMinor, 34500);
+  const current = () => db.collection('items').findOne({ _id: material._id });
+  assert.equal((await current()).stockMilli, 59050);
+  assert.equal((await current()).batches[0].remainingMilli, 29050);
+  await call(f, 'post', '/sales', sell(5000, stocked.batches[0].id)).expect(422);
+  await call(f, 'post', '/sales', sell(1, randomUUID())).expect(422);
+  const incompatible = sell(1);
+  incompatible.lines[0].consumption.unit = 'kg';
+  await call(f, 'post', '/sales', incompatible).expect(422);
+  const noWallet = sell(10);
+  noWallet.walletId = randomUUID();
+  await call(f, 'post', '/sales', noWallet).expect(404);
+  assert.equal((await current()).stockMilli, 59050);
+  assert.equal(await db.collection('sales').countDocuments({ businessId: f.business._id }), 2);
+  assert.equal((await db.collection('wallets').findOne({ _id: w._id })).balanceMinor, 80000);
+  const movements = await db
+    .collection('stockMovements')
+    .find({ itemId: material._id, kind: 'sale' })
+    .toArray();
+  assert.equal(movements.length, 2);
+  assert.equal(movements[0].unit, 'm');
+  const now = await current();
+  await call(f, 'patch', `/items/${material._id}`, { unit: 'cm', revision: now.revision }).expect(
+    409,
+  );
 });
 test('Measured prices use converted consumption, automatic allocation spans rolls and quotes do not consume stock', async () => {
-  const f=await fixture(),w=await wallet(f,0);
-  const list=(await call(f,'post','/inventory-lists',{name:'Material por centímetro',inventoryDefaults:{unit:'m',priceUnit:'cm',pricing:'measure',tracking:'batches',packageSizeMilli:30000}}).expect(201)).body;
-  const material=(await call(f,'post','/items',{name:'Cable',listIds:[list._id],priceMinor:100,costMinor:2000}).expect(201)).body;
-  await call(f,'post',`/items/${material._id}/adjustments`,{deltaMilli:60000,batchCount:2,reason:'Dos rollos',revision:1}).expect(201);
-  const lines=[{itemId:material._id,quantityMilli:1000,consumption:{quantityMilli:30500,unit:'m'}}];
-  const quote=(await call(f,'post','/quotes',{title:'Trabajo',expiresOn:'2099-12-31',lines}).expect(201)).body;
-  assert.equal(quote.totalMinor,305000);assert.equal((await db.collection('items').findOne({_id:material._id})).stockMilli,60000);
-  const accepted=(await call(f,'post',`/quotes/${quote._id}/status`,{status:'accepted',revision:quote.revision}).expect(200)).body;
-  const sale=(await call(f,'post',`/quotes/${quote._id}/convert`,{walletId:w._id,revision:accepted.revision}).expect(201)).body;
-  assert.equal(sale.totalMinor,305000);assert.equal(sale.costMinor,61000);assert.equal(sale.lines[0].quantityMilli,3050000);assert.deepEqual(sale.lines[0].allocations.map(a=>a.quantityMilli),[30000,500]);
-  assert.equal((await db.collection('items').findOne({_id:material._id})).stockMilli,29500);
+  const f = await fixture(),
+    w = await wallet(f, 0);
+  const list = (
+    await call(f, 'post', '/inventory-lists', {
+      name: 'Material por centímetro',
+      inventoryDefaults: {
+        unit: 'm',
+        priceUnit: 'cm',
+        pricing: 'measure',
+        tracking: 'batches',
+        packageSizeMilli: 30000,
+      },
+    }).expect(201)
+  ).body;
+  const material = (
+    await call(f, 'post', '/items', {
+      name: 'Cable',
+      listIds: [list._id],
+      priceMinor: 100,
+      costMinor: 2000,
+    }).expect(201)
+  ).body;
+  await call(f, 'post', `/items/${material._id}/adjustments`, {
+    deltaMilli: 60000,
+    batchCount: 2,
+    reason: 'Dos rollos',
+    revision: 1,
+  }).expect(201);
+  const lines = [
+    { itemId: material._id, quantityMilli: 1000, consumption: { quantityMilli: 30500, unit: 'm' } },
+  ];
+  const quote = (
+    await call(f, 'post', '/quotes', { title: 'Trabajo', expiresOn: '2099-12-31', lines }).expect(
+      201,
+    )
+  ).body;
+  assert.equal(quote.totalMinor, 305000);
+  assert.equal((await db.collection('items').findOne({ _id: material._id })).stockMilli, 60000);
+  const accepted = (
+    await call(f, 'post', `/quotes/${quote._id}/status`, {
+      status: 'accepted',
+      revision: quote.revision,
+    }).expect(200)
+  ).body;
+  const sale = (
+    await call(f, 'post', `/quotes/${quote._id}/convert`, {
+      walletId: w._id,
+      revision: accepted.revision,
+    }).expect(201)
+  ).body;
+  assert.equal(sale.totalMinor, 305000);
+  assert.equal(sale.costMinor, 61000);
+  assert.equal(sale.lines[0].quantityMilli, 3050000);
+  assert.deepEqual(
+    sale.lines[0].allocations.map((a) => a.quantityMilli),
+    [30000, 500],
+  );
+  assert.equal((await db.collection('items').findOne({ _id: material._id })).stockMilli, 29500);
 });
 test('Service catalog consumes internal-only materials, preserves the service charge and rolls back every failed effect', async () => {
-  const f=await fixture(),w=await wallet(f,0),vinyl=await item(f,30000);
-  await call(f,'patch','/items/'+vinyl._id,{sellable:false,unit:'m',revision:vinyl.revision}).expect(409);
+  const f = await fixture(),
+    w = await wallet(f, 0),
+    vinyl = await item(f, 30000);
+  await call(f, 'patch', '/items/' + vinyl._id, {
+    sellable: false,
+    unit: 'm',
+    revision: vinyl.revision,
+  }).expect(409);
   // A zero-balance item can be configured before receiving the roll.
-  const list=(await call(f,'post','/inventory-lists',{name:'Uso interno'}).expect(201)).body;
-  const material=(await call(f,'post','/items',{name:'Vinil interno',listIds:[list._id],sellable:false,unit:'m',costMinor:10000,stockConfig:{pricing:'unit',tracking:'batches',packageSizeMilli:30000}}).expect(201)).body;
-  const stocked=(await call(f,'post','/items/'+material._id+'/adjustments',{deltaMilli:30000,reason:'Rollo inicial',revision:1}).expect(201)).body.item;
-  const saved=(await call(f,'post','/services',{name:'Polarizado de carro',priceMinor:40000,materials:[{itemId:material._id,quantityMilli:40000,unit:'cm'}]}).expect(201)).body;
-  assert.equal((await db.collection('items').findOne({_id:material._id})).stockMilli,30000);
-  const viewer=await user();await call(f,'post','/members',{email:viewer.email,role:'viewer'}).expect(201);const readOnly={...f,token:viewer.token};await call(readOnly,'get','/services').expect(200);await call(readOnly,'post','/services',{name:'No permitido',priceMinor:100}).expect(403);await call(readOnly,'post','/sales',{walletId:w._id,lines:[{serviceId:saved._id,quantityMilli:1000}]}).expect(403);
-  await call(f,'post','/sales',{walletId:w._id,lines:[{itemId:material._id,quantityMilli:400}]}).expect(422);
-  const input={walletId:w._id,lines:[{serviceId:saved._id,quantityMilli:1000}]},key=randomUUID();
-  const first=(await call(f,'post','/sales',input,key).expect(201)).body;
-  assert.equal(first.totalMinor,40000);assert.equal(first.costMinor,4000);assert.equal(first.lines[0].name,'Polarizado de carro');assert.equal(first.lines[0].materials[0].allocations[0].batchId,stocked.batches[0].id);
-  assert.equal((await call(f,'post','/sales',input,key).expect(201)).body._id,first._id);
-  const actual={walletId:w._id,lines:[{serviceId:saved._id,quantityMilli:1000,materials:[{itemId:material._id,quantityMilli:55000,unit:'cm',batchId:stocked.batches[0].id}]}]};
-  const second=(await call(f,'post','/sales',actual).expect(201)).body;assert.equal(second.totalMinor,40000);assert.equal(second.costMinor,5500);assert.equal(second.profitMinor,34500);
-  const fail={...actual,walletId:randomUUID()};await call(f,'post','/sales',fail).expect(404);
-  const noStock=structuredClone(actual);noStock.lines[0].materials[0].quantityMilli=4000000;await call(f,'post','/sales',noStock).expect(422);
-  const cross=await fixture(),foreign=await item(cross);await call(cross,'get','/services/'+saved._id).expect(404);const foreignInput=structuredClone(actual);foreignInput.lines[0].materials[0].itemId=foreign._id;await call(f,'post','/sales',foreignInput).expect(404);
-  assert.equal((await db.collection('items').findOne({_id:material._id})).stockMilli,29050);assert.equal((await db.collection('wallets').findOne({_id:w._id})).balanceMinor,80000);
-  const audit=await db.collection('stockMovements').find({itemId:material._id,kind:'sale'}).toArray();assert.equal(audit.length,2);assert.equal(audit[0].serviceId,saved._id);assert.match(audit[0].reason,/Polarizado/);
-  const archived=(await call(f,'patch','/services/'+saved._id,{archived:true,revision:saved.revision}).expect(200)).body;await call(f,'post','/sales',input).expect(422);
-  assert.equal((await call(f,'get','/sales/'+first._id).expect(200)).body.lines[0].materials[0].name,'Vinil interno');
-  await call(f,'patch','/services/'+saved._id,{archived:false,revision:archived.revision}).expect(200);
-  const free=(await call(f,'post','/sales',{walletId:w._id,lines:[{name:'Polarizado ocasional',unitPriceMinor:40000,quantityMilli:1000,materials:[{itemId:material._id,quantityMilli:40000,unit:'cm'}]}]}).expect(201)).body;assert.equal(free.totalMinor,40000);assert.equal(free.costMinor,4000);
-  const quote=(await call(f,'post','/quotes',{title:'Polarizado',expiresOn:'2099-12-31',lines:[{serviceId:saved._id,quantityMilli:1000,materials:[{itemId:material._id,quantityMilli:55000,unit:'cm',batchId:stocked.batches[0].id}]}]}).expect(201)).body;
-  const accepted=(await call(f,'post','/quotes/'+quote._id+'/status',{status:'accepted',revision:quote.revision}).expect(200)).body;
-  const conversion=(await call(f,'post','/quotes/'+quote._id+'/convert',{walletId:w._id,revision:accepted.revision}).expect(201)).body;assert.equal(conversion.costMinor,5500);assert.equal(conversion.lines[0].materials[0].allocations[0].batchId,stocked.batches[0].id);
+  const list = (await call(f, 'post', '/inventory-lists', { name: 'Uso interno' }).expect(201))
+    .body;
+  const material = (
+    await call(f, 'post', '/items', {
+      name: 'Vinil interno',
+      listIds: [list._id],
+      sellable: false,
+      unit: 'm',
+      costMinor: 10000,
+      stockConfig: { pricing: 'unit', tracking: 'batches', packageSizeMilli: 30000 },
+    }).expect(201)
+  ).body;
+  const stocked = (
+    await call(f, 'post', '/items/' + material._id + '/adjustments', {
+      deltaMilli: 30000,
+      reason: 'Rollo inicial',
+      revision: 1,
+    }).expect(201)
+  ).body.item;
+  const saved = (
+    await call(f, 'post', '/services', {
+      name: 'Polarizado de carro',
+      priceMinor: 40000,
+      materials: [{ itemId: material._id, quantityMilli: 40000, unit: 'cm' }],
+    }).expect(201)
+  ).body;
+  assert.equal((await db.collection('items').findOne({ _id: material._id })).stockMilli, 30000);
+  const viewer = await user();
+  await call(f, 'post', '/members', { email: viewer.email, role: 'viewer' }).expect(201);
+  const readOnly = { ...f, token: viewer.token };
+  await call(readOnly, 'get', '/services').expect(200);
+  await call(readOnly, 'post', '/services', { name: 'No permitido', priceMinor: 100 }).expect(403);
+  await call(readOnly, 'post', '/sales', {
+    walletId: w._id,
+    lines: [{ serviceId: saved._id, quantityMilli: 1000 }],
+  }).expect(403);
+  await call(f, 'post', '/sales', {
+    walletId: w._id,
+    lines: [{ itemId: material._id, quantityMilli: 400 }],
+  }).expect(422);
+  const input = { walletId: w._id, lines: [{ serviceId: saved._id, quantityMilli: 1000 }] },
+    key = randomUUID();
+  const first = (await call(f, 'post', '/sales', input, key).expect(201)).body;
+  assert.equal(first.totalMinor, 40000);
+  assert.equal(first.costMinor, 4000);
+  assert.equal(first.lines[0].name, 'Polarizado de carro');
+  assert.equal(first.lines[0].materials[0].allocations[0].batchId, stocked.batches[0].id);
+  assert.equal((await call(f, 'post', '/sales', input, key).expect(201)).body._id, first._id);
+  const actual = {
+    walletId: w._id,
+    lines: [
+      {
+        serviceId: saved._id,
+        quantityMilli: 1000,
+        materials: [
+          {
+            itemId: material._id,
+            quantityMilli: 55000,
+            unit: 'cm',
+            batchId: stocked.batches[0].id,
+          },
+        ],
+      },
+    ],
+  };
+  const second = (await call(f, 'post', '/sales', actual).expect(201)).body;
+  assert.equal(second.totalMinor, 40000);
+  assert.equal(second.costMinor, 5500);
+  assert.equal(second.profitMinor, 34500);
+  const fail = { ...actual, walletId: randomUUID() };
+  await call(f, 'post', '/sales', fail).expect(404);
+  const noStock = structuredClone(actual);
+  noStock.lines[0].materials[0].quantityMilli = 4000000;
+  await call(f, 'post', '/sales', noStock).expect(422);
+  const cross = await fixture(),
+    foreign = await item(cross);
+  await call(cross, 'get', '/services/' + saved._id).expect(404);
+  const foreignInput = structuredClone(actual);
+  foreignInput.lines[0].materials[0].itemId = foreign._id;
+  await call(f, 'post', '/sales', foreignInput).expect(404);
+  assert.equal((await db.collection('items').findOne({ _id: material._id })).stockMilli, 29050);
+  assert.equal((await db.collection('wallets').findOne({ _id: w._id })).balanceMinor, 80000);
+  const audit = await db
+    .collection('stockMovements')
+    .find({ itemId: material._id, kind: 'sale' })
+    .toArray();
+  assert.equal(audit.length, 2);
+  assert.equal(audit[0].serviceId, saved._id);
+  assert.match(audit[0].reason, /Polarizado/);
+  const archived = (
+    await call(f, 'patch', '/services/' + saved._id, {
+      archived: true,
+      revision: saved.revision,
+    }).expect(200)
+  ).body;
+  await call(f, 'post', '/sales', input).expect(422);
+  assert.equal(
+    (await call(f, 'get', '/sales/' + first._id).expect(200)).body.lines[0].materials[0].name,
+    'Vinil interno',
+  );
+  await call(f, 'patch', '/services/' + saved._id, {
+    archived: false,
+    revision: archived.revision,
+  }).expect(200);
+  const free = (
+    await call(f, 'post', '/sales', {
+      walletId: w._id,
+      lines: [
+        {
+          name: 'Polarizado ocasional',
+          unitPriceMinor: 40000,
+          quantityMilli: 1000,
+          materials: [{ itemId: material._id, quantityMilli: 40000, unit: 'cm' }],
+        },
+      ],
+    }).expect(201)
+  ).body;
+  assert.equal(free.totalMinor, 40000);
+  assert.equal(free.costMinor, 4000);
+  const quote = (
+    await call(f, 'post', '/quotes', {
+      title: 'Polarizado',
+      expiresOn: '2099-12-31',
+      lines: [
+        {
+          serviceId: saved._id,
+          quantityMilli: 1000,
+          materials: [
+            {
+              itemId: material._id,
+              quantityMilli: 55000,
+              unit: 'cm',
+              batchId: stocked.batches[0].id,
+            },
+          ],
+        },
+      ],
+    }).expect(201)
+  ).body;
+  const accepted = (
+    await call(f, 'post', '/quotes/' + quote._id + '/status', {
+      status: 'accepted',
+      revision: quote.revision,
+    }).expect(200)
+  ).body;
+  const conversion = (
+    await call(f, 'post', '/quotes/' + quote._id + '/convert', {
+      walletId: w._id,
+      revision: accepted.revision,
+    }).expect(201)
+  ).body;
+  assert.equal(conversion.costMinor, 5500);
+  assert.equal(conversion.lines[0].materials[0].allocations[0].batchId, stocked.batches[0].id);
 });
-test('Per-sale commissions use discounted revenue or gross profit, preserve contact snapshots and never withdraw cash',async()=>{
- const f=await fixture(),w=await wallet(f,0);
- const list=(await call(f,'post','/contact-lists',{name:'Comisionistas'}).expect(201)).body;
- const contact=(await call(f,'post','/contacts',{name:'Ana',listIds:[list._id]}).expect(201)).body;
- const commissions=[{contactId:contact._id,type:'percent',value:1000,base:'sale',description:'Referido'},{name:'Pedro',type:'fixed',value:2000},{name:'Técnico',type:'percent',value:1000,base:'profit'}];
- const input={walletId:w._id,lines:[{name:'Polarizado',quantityMilli:1000,unitPriceMinor:40000,unitCostMinor:5500}],discount:{type:'fixed',value:4000},commissions};const key=randomUUID();
- const sale=(await call(f,'post','/sales',input,key).expect(201)).body;
- assert.equal(sale.totalMinor,36000);assert.equal(sale.profitMinor,30500);assert.equal(sale.commissionTotalMinor,8650);assert.equal(sale.netProfitMinor,21850);assert.deepEqual(sale.commissions.map(c=>c.amountMinor),[3600,2000,3050]);assert.equal(sale.commissions[0].name,'Ana');
- assert.equal((await call(f,'post','/sales',input,key).expect(201)).body._id,sale._id);
- assert.equal((await db.collection('wallets').findOne({_id:w._id})).balanceMinor,36000);assert.equal(await db.collection('movements').countDocuments({businessId:f.business._id}),1);
- await call(f,'patch','/contacts/'+contact._id,{name:'Ana nueva',revision:contact.revision}).expect(200);assert.equal((await call(f,'get','/sales/'+sale._id).expect(200)).body.commissions[0].name,'Ana');
- const bad={...input,commissions:[{name:'Inválido',type:'percent',value:10001}]};await call(f,'post','/sales',bad).expect(422);
- const other=await fixture(),otherList=(await call(other,'post','/contact-lists',{name:'Privados'}).expect(201)).body,foreign=(await call(other,'post','/contacts',{name:'Ajeno',listIds:[otherList._id]}).expect(201)).body;
- await call(f,'post','/sales',{...input,commissions:[{contactId:foreign._id,type:'fixed',value:100}]}).expect(404);assert.equal((await db.collection('wallets').findOne({_id:w._id})).balanceMinor,36000);
- const quote=(await call(f,'post','/quotes',{title:'Con comisión al vender',lines:input.lines,discount:input.discount,expiresOn:'2099-12-31'}).expect(201)).body;
- const accepted=(await call(f,'post','/quotes/'+quote._id+'/status',{status:'accepted',revision:quote.revision}).expect(200)).body;
- const converted=(await call(f,'post','/quotes/'+quote._id+'/convert',{walletId:w._id,revision:accepted.revision,commissions}).expect(201)).body;assert.equal(converted.commissionTotalMinor,8650);assert.equal(converted.commissions[0].name,'Ana nueva');
- const loss=(await call(f,'post','/sales',{walletId:w._id,lines:[{name:'Servicio con pérdida',quantityMilli:1000,unitPriceMinor:1000,unitCostMinor:2000}],commissions:[{name:'Sin ganancia',type:'percent',value:5000,base:'profit'},{name:'Fijo',type:'fixed',value:200}]}).expect(201)).body;assert.equal(loss.commissions[0].amountMinor,0);assert.equal(loss.netProfitMinor,-1200);
+test('Per-sale commissions use discounted revenue or gross profit, preserve contact snapshots and never withdraw cash', async () => {
+  const f = await fixture(),
+    w = await wallet(f, 0);
+  const list = (await call(f, 'post', '/contact-lists', { name: 'Comisionistas' }).expect(201))
+    .body;
+  const contact = (
+    await call(f, 'post', '/contacts', { name: 'Ana', listIds: [list._id] }).expect(201)
+  ).body;
+  const commissions = [
+    { contactId: contact._id, type: 'percent', value: 1000, base: 'sale', description: 'Referido' },
+    { name: 'Pedro', type: 'fixed', value: 2000 },
+    { name: 'Técnico', type: 'percent', value: 1000, base: 'profit' },
+  ];
+  const input = {
+    walletId: w._id,
+    lines: [
+      { name: 'Polarizado', quantityMilli: 1000, unitPriceMinor: 40000, unitCostMinor: 5500 },
+    ],
+    discount: { type: 'fixed', value: 4000 },
+    commissions,
+  };
+  const key = randomUUID();
+  const sale = (await call(f, 'post', '/sales', input, key).expect(201)).body;
+  assert.equal(sale.totalMinor, 36000);
+  assert.equal(sale.profitMinor, 30500);
+  assert.equal(sale.commissionTotalMinor, 8650);
+  assert.equal(sale.netProfitMinor, 21850);
+  assert.deepEqual(
+    sale.commissions.map((c) => c.amountMinor),
+    [3600, 2000, 3050],
+  );
+  assert.equal(sale.commissions[0].name, 'Ana');
+  assert.equal((await call(f, 'post', '/sales', input, key).expect(201)).body._id, sale._id);
+  assert.equal((await db.collection('wallets').findOne({ _id: w._id })).balanceMinor, 36000);
+  assert.equal(await db.collection('movements').countDocuments({ businessId: f.business._id }), 1);
+  await call(f, 'patch', '/contacts/' + contact._id, {
+    name: 'Ana nueva',
+    revision: contact.revision,
+  }).expect(200);
+  assert.equal(
+    (await call(f, 'get', '/sales/' + sale._id).expect(200)).body.commissions[0].name,
+    'Ana',
+  );
+  const bad = { ...input, commissions: [{ name: 'Inválido', type: 'percent', value: 10001 }] };
+  await call(f, 'post', '/sales', bad).expect(422);
+  const other = await fixture(),
+    otherList = (await call(other, 'post', '/contact-lists', { name: 'Privados' }).expect(201))
+      .body,
+    foreign = (
+      await call(other, 'post', '/contacts', { name: 'Ajeno', listIds: [otherList._id] }).expect(
+        201,
+      )
+    ).body;
+  await call(f, 'post', '/sales', {
+    ...input,
+    commissions: [{ contactId: foreign._id, type: 'fixed', value: 100 }],
+  }).expect(404);
+  assert.equal((await db.collection('wallets').findOne({ _id: w._id })).balanceMinor, 36000);
+  const quote = (
+    await call(f, 'post', '/quotes', {
+      title: 'Con comisión al vender',
+      lines: input.lines,
+      discount: input.discount,
+      expiresOn: '2099-12-31',
+    }).expect(201)
+  ).body;
+  const accepted = (
+    await call(f, 'post', '/quotes/' + quote._id + '/status', {
+      status: 'accepted',
+      revision: quote.revision,
+    }).expect(200)
+  ).body;
+  const converted = (
+    await call(f, 'post', '/quotes/' + quote._id + '/convert', {
+      walletId: w._id,
+      revision: accepted.revision,
+      commissions,
+    }).expect(201)
+  ).body;
+  assert.equal(converted.commissionTotalMinor, 8650);
+  assert.equal(converted.commissions[0].name, 'Ana nueva');
+  const loss = (
+    await call(f, 'post', '/sales', {
+      walletId: w._id,
+      lines: [
+        {
+          name: 'Servicio con pérdida',
+          quantityMilli: 1000,
+          unitPriceMinor: 1000,
+          unitCostMinor: 2000,
+        },
+      ],
+      commissions: [
+        { name: 'Sin ganancia', type: 'percent', value: 5000, base: 'profit' },
+        { name: 'Fijo', type: 'fixed', value: 200 },
+      ],
+    }).expect(201)
+  ).body;
+  assert.equal(loss.commissions[0].amountMinor, 0);
+  assert.equal(loss.netProfitMinor, -1200);
 });
 test('Bearer obligatorio, rechazo de token alterado y cierre de sesión revocable', async () => {
   await request(app).get('/api/v1/businesses').expect(401);

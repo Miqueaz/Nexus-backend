@@ -1,5 +1,20 @@
 # API v1
 
+## Ajustes y cancelaciones con historial
+
+- `POST /businesses/:businessId/movements/:id/corrections`: `{revision,reason,replacement:{walletId,kind,amountMinor,category,description,occurredOn,toWalletId?}}`. `kind`: `income`, `expense` o `transfer`. Una transferencia conserva su tipo y requiere dos carteras distintas.
+- `POST /businesses/:businessId/movements/:id/cancellations`: `{revision,reason}`.
+- `GET /businesses/:businessId/movements/:id/changes`: `{rootId,selectedId,rows}`, original y ajustes en orden.
+- Mismas rutas bajo `/debts/:id` para compras a crédito sin abonos y fuera de períodos cerrados. Reemplazo: `{name,creditLineId,principalMinor,feeMinor,terms,firstDueOn,mode,category,notes}`; `mode`: `monthly` o `balloon`.
+
+Las escrituras requieren Bearer, permiso de escritura en Finanzas e `Idempotency-Key`. Importes en centavos. Motivo obligatorio. Revisiones obsoletas se rechazan con 409. Cada operación es atómica y auditada, valida saldos finales y corrige ambas caras de una transferencia. Los originales conservan importes, conceptos y fechas; solo reciben estado `edited`/`cancelled` y vínculos. Se insertan asientos `entryRole: reversal` y, al editar, `entryRole: adjustment`. No se admiten ajustes de reversiones ni versiones ya reemplazadas.
+
+El historial usa `rootMovementId`, `previousMovementId`, `adjustmentMovementId`, `reversalMovementId` (o vínculos `DebtId` para compras). `adjustmentReason` y `createdBy` conservan el origen del ajuste; `changeReason`, `changedBy`, `changedAt` describen el cambio posterior. Se carga solo el grupo, sin una consulta por cada versión.
+
+Las compras reemplazadas conservan el calendario original con `status: cancelled`; su reemplazo usa el cupo corregido sin mover efectivo. Saldos y calendario excluyen las versiones reemplazadas. Los cierres y pagos anteriores no se recalculan silenciosamente. Compras con abonos: `CHARGE_HAS_PAYMENTS`; períodos cerrados: `CLOSED_STATEMENT`.
+
+Los movimientos automáticos ligados a ventas, créditos recibidos, abonos y saldos iniciales están protegidos con `SOURCE_MOVEMENT`; no se corrigen como ingresos/gastos manuales. No se crean colecciones ni se requiere migración destructiva.
+
 Base de producción: `https://api.nexo.aethel.ing/api/v1`. Desarrollo: `http://localhost:3000/api/v1`. JSON. Los ejemplos usan IDs UUID de las respuestas `_id`.
 
 ## Autenticación

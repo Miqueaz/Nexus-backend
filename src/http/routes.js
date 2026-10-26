@@ -139,6 +139,32 @@ export function createRoutes(s) {
   write('post', '/wallets', (r) => s.finance.createWallet(r.context, r.body), financial);
   write('patch', '/wallets/:id', (r) => s.finance.updateWallet(r.context, r.params.id, r.body));
   write('post', '/movements', (r) => s.finance.record(r.context, r.body), financial);
+  read('/debts/:id/changes', (r) => s.debtCorrections.history(r.context, r.params.id));
+  write(
+    'post',
+    '/debts/:id/corrections',
+    (r) => s.debtCorrections.correct(r.context, r.params.id, r.body),
+    financial,
+  );
+  write(
+    'post',
+    '/debts/:id/cancellations',
+    (r) => s.debtCorrections.correct(r.context, r.params.id, r.body, true),
+    financial,
+  );
+  read('/movements/:id/changes', (r) => s.movementCorrections.history(r.context, r.params.id));
+  write(
+    'post',
+    '/movements/:id/corrections',
+    (r) => s.movementCorrections.correct(r.context, r.params.id, r.body),
+    financial,
+  );
+  write(
+    'post',
+    '/movements/:id/cancellations',
+    (r) => s.movementCorrections.correct(r.context, r.params.id, r.body, true),
+    financial,
+  );
   write('post', '/transfers', (r) => s.finance.transfer(r.context, r.body), financial);
   for (const [path, service] of [
     ['inventory-lists', s.inventoryLists],

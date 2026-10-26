@@ -1,3 +1,5 @@
+import { createDebtCorrections } from './modules/debts/corrections.js';
+import { createMovementCorrections } from './modules/finance/corrections.js';
 import { createServiceCatalog } from './modules/services/service.js';
 import { createSaleLinesAdapter } from './adapters/modules/sale-lines.js';
 import { createPlatformService } from './modules/platform/service.js';
@@ -86,6 +88,8 @@ export async function createContainer({ client, db, config, logger, googleIdenti
       commands,
       idempotency,
     }),
+    debtCorrections: createDebtCorrections({ commands }),
+    movementCorrections: createMovementCorrections({ commands }),
     finance: createFinanceService({ commands, finance, financialManagement }),
     inventory: createInventoryService({ commands }),
     inventoryLists: createListService({
