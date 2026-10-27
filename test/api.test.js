@@ -111,7 +111,13 @@ test('Contact commissioner profiles link only workspace users, scope service con
   const input = { name: 'Ana', listIds: [list._id], userId: f.id, commissionProfile: profile };
   await call(f, 'post', '/contacts', { ...input, userId: outsider.id }).expect(422);
   const c = (await call(f, 'post', '/contacts', input).expect(201)).body;
-  assert.equal(c.userId, f.id);
+  assert.equal(c.userId, null);
+  await request(app)
+    .post('/api/v1/notifications/' + c._id + '/respond')
+    .auth(f.token, { type: 'bearer' })
+    .set('Idempotency-Key', randomUUID())
+    .send({ businessId: f.business._id, requestId: c.userLink.requestId, decision: 'accepted' })
+    .expect(200);
   assert.equal(c.commissionProfile.services[0].value, 1500);
   await call(f, 'patch', '/contacts/' + c._id, {
     revision: 1,
@@ -143,13 +149,24 @@ test('Contact commissioner profiles link only workspace users, scope service con
   assert.equal(sale.commissions[0].serviceName, 'Polarizado');
   assert.equal(sale.netProfitMinor, 84600);
   await call(f, 'patch', '/contacts/' + c._id, {
-    revision: 1,
+    revision: 2,
     userId: teammate.id,
     commissionProfile: { ...profile, default: { ...profile.default, value: 2000 } },
   }).expect(200);
   const stored = (await call(f, 'get', '/sales/' + sale._id).expect(200)).body;
   assert.equal(stored.commissionTotalMinor, 5400);
   assert.equal(stored.commissions[0].userId, f.id);
+  const pending = (await call(f, 'get', '/contacts/' + c._id).expect(200)).body;
+  await request(app)
+    .post('/api/v1/notifications/' + c._id + '/respond')
+    .auth(teammate.token, { type: 'bearer' })
+    .set('Idempotency-Key', randomUUID())
+    .send({
+      businessId: f.business._id,
+      requestId: pending.userLink.requestId,
+      decision: 'accepted',
+    })
+    .expect(200);
   const edited = (
     await call(f, 'patch', `/sales/${sale._id}/commissions`, {
       revision: 1,
@@ -180,13 +197,13 @@ test('Contact commissioner profiles link only workspace users, scope service con
       }).expect(201)
     ).body;
   await call(f, 'patch', '/contacts/' + c._id, {
-    revision: 2,
+    revision: 4,
     commissionProfile: {
       ...profile,
       services: [{ ...profile.services[0], serviceId: foreignService._id }],
     },
   }).expect(404);
-  await call(f, 'patch', '/contacts/' + c._id, { revision: 2, userId: null }).expect(200);
+  await call(f, 'patch', '/contacts/' + c._id, { revision: 4, userId: null }).expect(200);
   assert.equal((await call(f, 'get', '/contacts/' + c._id).expect(200)).body.userId, null);
 });
 function call(f, method, path, body, key = randomUUID()) {
@@ -196,6 +213,183 @@ function call(f, method, path, body, key = randomUUID()) {
   if (body) r = r.send(body);
   return r.set('Idempotency-Key', key);
 }
+
+test('Named customers and commissionists do not need contacts, memberships or account associations', async () => {
+  const f = await fixture(),
+    w = await wallet(f, 0),
+    saleInput = {
+      walletId: w._id,
+      customerName: 'Cliente de mostrador',
+      lines: [
+        { name: 'Trabajo libre', quantityMilli: 1000, unitPriceMinor: 40000, unitCostMinor: 10000 },
+      ],
+      commissions: [
+        {
+          name: 'Instalador externo',
+          type: 'percent',
+          value: 1000,
+          base: 'sale',
+          description: 'Acuerdo directo',
+        },
+      ],
+    };
+  const sale = (await call(f, 'post', '/sales', saleInput).expect(201)).body;
+  assert.equal(sale.customer.name, 'Cliente de mostrador');
+  assert.equal(sale.customer._id, undefined);
+  assert.equal(sale.commissions[0].name, 'Instalador externo');
+  assert.equal(sale.commissions[0].userId, undefined);
+  assert.equal(sale.commissionTotalMinor, 4000);
+  assert.equal(await db.collection('contacts').countDocuments({ businessId: f.business._id }), 0);
+  const quote = (
+    await call(f, 'post', '/quotes', {
+      customerName: 'Cliente cotizado',
+      title: 'Trabajo',
+      lines: saleInput.lines,
+      expiresOn: '2099-01-01',
+    }).expect(201)
+  ).body;
+  await call(f, 'post', '/quotes/' + quote._id + '/status', {
+    revision: 1,
+    status: 'accepted',
+  }).expect(200);
+  const converted = (
+    await call(f, 'post', '/quotes/' + quote._id + '/convert', {
+      revision: 2,
+      walletId: w._id,
+    }).expect(201)
+  ).body;
+  assert.equal(converted.customer.name, 'Cliente cotizado');
+  const unnamed = (
+    await call(f, 'post', '/sales', { walletId: w._id, lines: saleInput.lines }).expect(201)
+  ).body;
+  assert.equal(unnamed.customer, null);
+  assert.equal(unnamed.commissions.length, 0);
+
+  const list = (
+    await call(f, 'post', '/contact-lists', { name: 'Clientes', fields: [] }).expect(201)
+  ).body;
+  const contact = (
+    await call(f, 'post', '/contacts', { name: 'Cliente guardado', listIds: [list._id] }).expect(
+      201,
+    )
+  ).body;
+  const q = (
+    await call(f, 'post', '/quotes', {
+      customerId: contact._id,
+      title: 'Cambio de cliente',
+      lines: saleInput.lines,
+      expiresOn: '2099-01-01',
+    }).expect(201)
+  ).body;
+  const updated = (
+    await call(f, 'put', '/quotes/' + q._id, {
+      revision: 1,
+      customerName: 'Nombre nuevo',
+      title: q.title,
+      lines: saleInput.lines,
+      expiresOn: '2099-01-01',
+    }).expect(200)
+  ).body;
+  assert.equal(updated.customerId, null);
+  await call(f, 'post', '/quotes/' + q._id + '/status', { revision: 2, status: 'accepted' }).expect(
+    200,
+  );
+  const changed = (
+    await call(f, 'post', '/quotes/' + q._id + '/convert', { revision: 3, walletId: w._id }).expect(
+      201,
+    )
+  ).body;
+  assert.equal(changed.customer.name, 'Nombre nuevo');
+});
+
+test('Association notifications require the target consent, support viewer responses and reject stale or foreign requests', async () => {
+  const f = await fixture(),
+    recipient = await user(),
+    stranger = await user();
+  await call(f, 'post', '/members', { email: recipient.email, role: 'viewer' }).expect(201);
+  const list = (
+    await call(f, 'post', '/contact-lists', { name: 'Personas', fields: [] }).expect(201)
+  ).body;
+  const c = (
+    await call(f, 'post', '/contacts', {
+      name: 'Persona asociada',
+      listIds: [list._id],
+      userId: recipient.id,
+      commissionProfile: {
+        enabled: true,
+        default: { type: 'fixed', value: 1000, base: 'sale', description: '' },
+        services: [],
+      },
+    }).expect(201)
+  ).body;
+  assert.equal(c.userId, null);
+  assert.equal(c.userLink.status, 'pending');
+  const inbox = async (u) =>
+    (await request(app).get('/api/v1/notifications').auth(u.token, { type: 'bearer' }).expect(200))
+      .body.data;
+  assert.equal((await inbox(f)).length, 0);
+  assert.equal((await inbox(stranger)).length, 0);
+  assert.equal((await inbox(recipient))[0].contactName, c.name);
+  const respond = (u, requestId, decision) =>
+    request(app)
+      .post('/api/v1/notifications/' + c._id + '/respond')
+      .auth(u.token, { type: 'bearer' })
+      .set('Idempotency-Key', randomUUID())
+      .send({ businessId: f.business._id, requestId, decision });
+  await respond(f, c.userLink.requestId, 'accepted').expect(404);
+  await respond(recipient, 'wrong', 'accepted').expect(409);
+  await respond(recipient, c.userLink.requestId, 'rejected').expect(200);
+  await respond(recipient, c.userLink.requestId, 'rejected').expect(200);
+  assert.equal((await inbox(recipient)).length, 0);
+  let stored = (await call(f, 'get', '/contacts/' + c._id).expect(200)).body;
+  assert.equal(stored.userId, null);
+  assert.equal(stored.userLink.status, 'rejected');
+  const resent = (
+    await call(f, 'patch', '/contacts/' + c._id, {
+      revision: stored.revision,
+      userId: recipient.id,
+    }).expect(200)
+  ).body;
+  assert.notEqual(resent.userLink.requestId, c.userLink.requestId);
+  await respond(recipient, c.userLink.requestId, 'accepted').expect(409);
+  await respond(recipient, resent.userLink.requestId, 'accepted').expect(200);
+  await respond(recipient, resent.userLink.requestId, 'accepted').expect(200);
+  stored = (await call(f, 'get', '/contacts/' + c._id).expect(200)).body;
+  assert.equal(stored.userId, recipient.id);
+  assert.equal(stored.userLink.status, 'accepted');
+  assert.equal(
+    (
+      await db
+        .collection('memberships')
+        .findOne({ businessId: f.business._id, userId: recipient.id })
+    ).role,
+    'viewer',
+  );
+  assert.equal(
+    await db.collection('audit').countDocuments({
+      businessId: f.business._id,
+      entityId: c._id,
+      action: 'contact.association.accepted',
+    }),
+    1,
+  );
+  const cancelled = (
+    await call(f, 'patch', '/contacts/' + c._id, {
+      revision: stored.revision,
+      userId: null,
+    }).expect(200)
+  ).body;
+  assert.equal(cancelled.userId, null);
+  await respond(recipient, resent.userLink.requestId, 'accepted').expect(409);
+  // Old direct links also require consent; they are never treated as accepted implicitly.
+  await db
+    .collection('contacts')
+    .updateOne({ _id: c._id }, { $set: { userId: recipient.id }, $unset: { userLink: '' } });
+  const legacy = (await inbox(recipient))[0];
+  assert.equal(legacy.requestId, 'legacy:' + c._id);
+  await respond(recipient, legacy.requestId, 'rejected').expect(200);
+  assert.equal((await call(f, 'get', '/contacts/' + c._id).expect(200)).body.userId, null);
+});
 
 test('Movement corrections preserve originals, audit reasons, exact balances and idempotent history', async () => {
   const f = await fixture(),

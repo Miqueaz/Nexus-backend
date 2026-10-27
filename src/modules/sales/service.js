@@ -1,3 +1,4 @@
+import { ensure } from '../../core/errors.js';
 import { id, revision, z } from '../../core/validation.js';
 import { calculateCommissions, commissionsInput } from './commissions.js';
 import { randomUUID } from 'node:crypto';
@@ -5,7 +6,17 @@ import { saleSchema } from './schemas.js';
 import { totals } from '../../core/money.js';
 export function createSalesService({ commands, inventory, finance, contacts }) {
   async function createInTx(tx, input) {
-    const customer = await contacts.assertCustomer(tx, input.customerId);
+    ensure(
+      !input.customerId || !input.customerName,
+      422,
+      'CUSTOMER_CHOICE',
+      'Selecciona un contacto o escribe un nombre de cliente',
+    );
+    const customer = input.customerId
+      ? await contacts.assertCustomer(tx, input.customerId)
+      : input.customerName
+        ? { name: input.customerName }
+        : null;
     const lines = await inventory.prepare(tx, input.lines);
     const commercial = totals(lines, input.discount);
     const commissions = await calculateCommissions(

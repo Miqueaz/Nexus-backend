@@ -1,3 +1,4 @@
+import { requestedLink } from './user-links.js';
 import { commissionProfile } from './commission-profile.js';
 import { ensure } from '../../core/errors.js';
 import { parsePatch, z, text, notes, id, revision, values } from '../../core/validation.js';
@@ -51,7 +52,7 @@ export function createContactsService({ commands, contactUsers }) {
       return commands.run(ctx, 'contact.created', d, async (tx) => {
         await validateListValues(tx, 'contactLists', d.listIds, d.values);
         await validateLinks(tx, d);
-        return tx.insert('contacts', { ...d, archived: false });
+        return tx.insert('contacts', { ...requestedLink(ctx, d), archived: false });
       });
     },
     update(ctx, contactId, input) {
@@ -65,7 +66,7 @@ export function createContactsService({ commands, contactUsers }) {
         const next = { ...old, ...d };
         await validateLinks(tx, d);
         await validateListValues(tx, 'contactLists', next.listIds, next.values);
-        return tx.update('contacts', contactId, d.revision, d);
+        return tx.update('contacts', contactId, d.revision, requestedLink(ctx, d, old));
       });
     },
   };

@@ -116,6 +116,8 @@ export function businessSettings(business) {
       saleServices: 1,
       saleCommissions: 1,
       commissionerProfiles: 1,
+      associationConsent: 1,
+      namedCustomers: 1,
       movementCorrections: 1,
     },
     kind: business.kind ?? 'business',

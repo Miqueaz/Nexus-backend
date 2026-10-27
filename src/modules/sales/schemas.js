@@ -26,6 +26,7 @@ export const line = z
   );
 export const quoteSchema = z.strictObject({
   customerId: id.optional(),
+  customerName: text.optional(),
   title: text,
   lines: z.array(line).min(1).max(100),
   discount,
@@ -36,6 +37,7 @@ export const saleSchema = z.strictObject({
   commissions: commissionsSchema,
   walletId: id,
   customerId: id.optional(),
+  customerName: text.optional(),
   lines: z.array(line).min(1).max(100),
   discount,
   description: notes,

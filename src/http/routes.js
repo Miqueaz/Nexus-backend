@@ -38,6 +38,13 @@ export function createRoutes(s) {
     idempotent: true,
   });
   add('get', prefix + '/administration/audit', (r) => s.platform.history(r.context));
+  add('get', prefix + '/notifications', (r) => s.notifications.list(r.context));
+  add(
+    'post',
+    prefix + '/notifications/:id/respond',
+    (r) => s.notifications.respond(r.context, r.params.id, r.body),
+    { idempotent: true },
+  );
   add('get', prefix + '/auth/me', (r) => s.auth.me(r.context));
   add('post', prefix + '/auth/logout', (r) => s.auth.logout(r.context));
   add('get', prefix + '/businesses', async (r) => ({ data: await s.businesses.list(r.context) }));

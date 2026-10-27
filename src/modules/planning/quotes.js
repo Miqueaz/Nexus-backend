@@ -7,8 +7,18 @@ export function createQuotesService({ commands, inventory, contacts, sales }) {
   return {
     create(ctx, input) {
       const d = quoteSchema.parse(input);
+      ensure(
+        !d.customerId || !d.customerName,
+        422,
+        'CUSTOMER_CHOICE',
+        'Selecciona un contacto o escribe un nombre de cliente',
+      );
       return commands.run(ctx, 'quote.created', d, async (tx) => {
-        const customer = await contacts.assertCustomer(tx, d.customerId);
+        const customer = d.customerId
+          ? await contacts.assertCustomer(tx, d.customerId)
+          : d.customerName
+            ? { name: d.customerName }
+            : null;
         const lines = await inventory.prepare(tx, d.lines);
         return tx.insert('quotes', {
           ...d,
@@ -22,6 +32,12 @@ export function createQuotesService({ commands, inventory, contacts, sales }) {
     update(ctx, quoteId, input) {
       id.parse(quoteId);
       const d = quoteSchema.extend({ revision }).parse(input);
+      ensure(
+        !d.customerId || !d.customerName,
+        422,
+        'CUSTOMER_CHOICE',
+        'Selecciona un contacto o escribe un nombre de cliente',
+      );
       return commands.run(ctx, 'quote.updated', { quoteId, ...d }, async (tx) => {
         const quote = await tx.get('quotes', quoteId);
         ensure(
@@ -30,10 +46,16 @@ export function createQuotesService({ commands, inventory, contacts, sales }) {
           'QUOTE_LOCKED',
           'Solo las cotizaciones en borrador se pueden editar',
         );
-        const customer = await contacts.assertCustomer(tx, d.customerId);
+        const customer = d.customerId
+          ? await contacts.assertCustomer(tx, d.customerId)
+          : d.customerName
+            ? { name: d.customerName }
+            : null;
         const lines = await inventory.prepare(tx, d.lines);
         return tx.update('quotes', quoteId, d.revision, {
           ...d,
+          customerId: d.customerId || null,
+          customerName: d.customerName || null,
           lines,
           customer: customer ?? null,
           ...totals(lines, d.discount),
@@ -82,7 +104,8 @@ export function createQuotesService({ commands, inventory, contacts, sales }) {
         );
         const sale = await sales.create(tx, {
           walletId: d.walletId,
-          customerId: q.customerId,
+          ...(q.customerId ? { customerId: q.customerId } : {}),
+          ...(q.customerName ? { customerName: q.customerName } : {}),
           lines: q.lines,
           discount: q.discount,
           description: q.notes,

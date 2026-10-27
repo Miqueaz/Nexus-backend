@@ -1,5 +1,16 @@
 # API v1
 
+## Clientes libres y consentimiento de asociaciones
+
+Ventas y cotizaciones admiten `customerName` opcional para un nombre libre, o `customerId` para un contacto existente; son excluyentes. Omitir ambos registra la operación sin cliente. El nombre libre queda como instantánea, no crea contactos. Los comisionistas admiten nombres libres o contactos; nunca requieren una cuenta de usuario.
+
+Enviar `userId` al crear/editar un contacto propone una asociación. El contacto conserva `userId: null` y `userLink: {requestId,targetUserId,status: pending,requestedBy,requestedAt}` hasta que la persona acepte. `userId: null` cancela/desvincula. Cambiar de destinatario invalida la solicitud anterior. Guardar la misma solicitud pendiente no genera otra. Los vínculos directos antiguos se consideran pendientes de revisión, sin activarse implícitamente. Las instantáneas de comisión nuevas incluyen `userId` solo con aceptación registrada.
+
+`GET /api/v1/notifications` devuelve hasta 50 solicitudes pendientes del usuario autenticado en espacios a los que conserva acceso. `POST /api/v1/notifications/:contactId/respond` recibe `{businessId,requestId,decision: accepted|rejected}` e `Idempotency-Key`. Solo el destinatario puede responder, incluso con rol viewer; no necesita permiso para editar contactos. La respuesta valida pertenencia y versión de solicitud, registra auditoría y no concede roles ni acceso. Repetir una decisión confirmada no duplica cambios. Un requestId reemplazado/cancelado se rechaza con 409.
+
+Las notificaciones son internas de Nexo (sesión, foco/visibilidad y máximo una comprobación por minuto en primer plano); no se envían correos ni push. La bandeja no carga documentos ni colecciones financieras, y responder invalida solo los contactos del negocio. Las solicitudes se conservan en el contacto y su auditoría, sin una colección ni migración nueva.
+
+
 ## Contactos, usuarios y condiciones de comisión
 
 Los contactos admiten `userId` (UUID o null para desvincular) y `commissionProfile: {enabled,default:{type,value,base,description},services:[{serviceId,type,value,base,description}]}`. Tipo `percent` (puntos base: 1500 = 15%) o `fixed` (centavos); base `sale` o `profit`. Máximo 50 servicios sin repetir. Las condiciones se guardan al crear o editar el contacto con su revisión. Cada servicio debe pertenecer al mismo negocio.
