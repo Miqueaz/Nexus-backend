@@ -96,7 +96,8 @@ export function createMovementCorrections({ commands }) {
             'Este movimiento ya fue ajustado o cancelado; abre su historial',
           );
           ensure(
-            ['income', 'expense', 'transfer'].includes(selected.kind) &&
+            !selected.commissionSettlement &&
+              ['income', 'expense', 'transfer'].includes(selected.kind) &&
               (selected.kind === 'transfer' || !selected.reference),
             422,
             'SOURCE_MOVEMENT',

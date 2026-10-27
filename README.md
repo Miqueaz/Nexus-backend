@@ -193,3 +193,12 @@ El módulo Administración permite controlar registro por portal/Google, inicio 
 Configura `PLATFORM_ADMIN_EMAILS` con los correos autorizados que tengan identidad verificada de Google. Registrar un correo sin verificar en el portal no concede el rol. `PLATFORM_ADMIN_USER_IDS` admite IDs existentes asignados explícitamente desde el servidor. En Workers se configuró `mik.isaac.gl@gmail.com` como administrador inicial; debe entrar con Google o vincular esa identidad a su cuenta existente. Un propietario de negocio no se convierte en administrador global.
 
 El preset Solo Google está disponible para elegirlo y guardarlo desde el panel; el despliegue conserva los métodos actuales hasta que se cambien. Desactivar registro y desactivar inicio de sesión son controles distintos. Se rechazan cambios que eliminen todas las formas de entrar o dejen al administrador sin un método utilizable. Cada cambio queda auditado con actor, fecha y revisión.
+
+
+### Carteras de comisionistas
+
+Cada perfil habilitado puede asignar `commissionProfile.walletId` o dejarlo vacío para crear `Comisionista · Nombre`. Las filas de comisión aceptan un `walletId` opcional que sustituye el destino solo en esa venta. Los nombres libres reutilizan su cartera automática dentro del mismo negocio; los contactos tienen identidad independiente. No requieren un usuario asociado.
+
+Al registrar una venta se ingresa el cobro una vez y se distribuyen las comisiones entre carteras con transferencias internas de efecto operativo cero. El saldo total del negocio se conserva. Elegir la misma cartera del cobro mantiene el dinero ahí. Editar comisiones mueve únicamente las diferencias contra las asignaciones guardadas; se conservan los movimientos anteriores y la auditoría. Si falta saldo para devolver una asignación, el ajuste completo se rechaza sin cambios parciales. No se ejecutan pagos bancarios externos.
+
+No se redistribuyen ventas antiguas automáticamente. Las nuevas ventas y las ediciones explícitas de comisiones aplican esta distribución. Los cambios de perfil afectan condiciones futuras, no ventas anteriores. La capacidad `commissionWallets: 1` habilita los controles; la API valida destinos del mismo negocio, revisión, permisos e idempotencia.

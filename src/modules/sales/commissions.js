@@ -4,6 +4,7 @@ import { roundRatio, safeInteger, lineAmount } from '../../core/money.js';
 export const commissionSchema = z
   .strictObject({
     contactId: id.optional(),
+    walletId: id.optional(),
     serviceId: id.optional(),
     name: text.optional(),
     type: z.enum(['percent', 'fixed']),

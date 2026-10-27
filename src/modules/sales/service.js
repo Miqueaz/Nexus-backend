@@ -4,7 +4,7 @@ import { calculateCommissions, commissionsInput } from './commissions.js';
 import { randomUUID } from 'node:crypto';
 import { saleSchema } from './schemas.js';
 import { totals } from '../../core/money.js';
-export function createSalesService({ commands, inventory, finance, contacts }) {
+export function createSalesService({ commands, inventory, finance, contacts, commissionWallets }) {
   async function createInTx(tx, input) {
     ensure(
       !input.customerId || !input.customerName,
@@ -26,6 +26,7 @@ export function createSalesService({ commands, inventory, finance, contacts }) {
       contacts,
     );
     const saleId = randomUUID();
+    commissions.commissions = await commissionWallets.prepare(tx, commissions.commissions);
     await inventory.consume(tx, lines, saleId);
     const sale = await tx.insert(
       'sales',
@@ -35,6 +36,12 @@ export function createSalesService({ commands, inventory, finance, contacts }) {
         customer: customer ?? null,
         ...commercial,
         ...commissions,
+        commissionAllocations: [
+          ...commissions.commissions.reduce(
+            (map, c) => map.set(c.walletId, (map.get(c.walletId) || 0) + c.amountMinor),
+            new Map(),
+          ),
+        ].map(([walletId, amountMinor]) => ({ walletId, amountMinor })),
         status: 'completed',
       },
       saleId,
@@ -49,6 +56,11 @@ export function createSalesService({ commands, inventory, finance, contacts }) {
       description: input.description,
       reference: sale._id,
     });
+    await commissionWallets.settle(
+      tx,
+      { ...sale, commissionAllocations: [] },
+      commissions.commissions,
+    );
     return sale;
   }
   return {
@@ -59,6 +71,8 @@ export function createSalesService({ commands, inventory, finance, contacts }) {
       return commands.run(ctx, 'sale.commissions.updated', { saleId, ...data }, async (tx) => {
         const sale = await tx.get('sales', saleId);
         const result = await calculateCommissions(tx, data.commissions, sale, contacts);
+        result.commissions = await commissionWallets.prepare(tx, result.commissions);
+        result.commissionAllocations = await commissionWallets.settle(tx, sale, result.commissions);
         return tx.update('sales', saleId, data.revision, result);
       });
     },

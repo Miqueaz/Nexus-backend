@@ -67,6 +67,97 @@ async function fixture() {
   return { ...u, business: r.body, base: `/api/v1/businesses/${r.body._id}` };
 }
 
+test('Commission wallets allocate once, reuse identities and adjust differences atomically', async () => {
+  const f = await fixture(),
+    source = await wallet(f, 0),
+    assigned = await wallet(f, 0);
+  const list = (await call(f, 'post', '/contact-lists', { name: 'Comisionistas' }).expect(201))
+    .body;
+  const profile = { enabled: true, default: { type: 'percent', value: 1000 }, services: [] };
+  const contact = (
+    await call(f, 'post', '/contacts', {
+      name: 'Ana',
+      listIds: [list._id],
+      commissionProfile: profile,
+    }).expect(201)
+  ).body;
+  assert.ok(contact.commissionProfile.walletId);
+  assert.equal(contact.userId, undefined);
+  const auto = (await call(f, 'get', '/wallets/' + contact.commissionProfile.walletId).expect(200))
+    .body;
+  assert.equal(auto.name, 'Comisionista · Ana');
+  assert.equal(auto.balanceMinor, 0);
+  const other = (
+    await call(f, 'post', '/contacts', {
+      name: 'Pedro',
+      listIds: [list._id],
+      commissionProfile: { ...profile, walletId: assigned._id },
+    }).expect(201)
+  ).body;
+  assert.equal(other.commissionProfile.walletId, assigned._id);
+  const input = {
+    walletId: source._id,
+    lines: [{ name: 'Servicio', quantityMilli: 1000, unitPriceMinor: 10000 }],
+    commissions: [{ contactId: contact._id, type: 'percent', value: 1000 }],
+  };
+  const key = randomUUID(),
+    sale = (await call(f, 'post', '/sales', input, key).expect(201)).body;
+  assert.equal(sale.commissions[0].walletId, auto._id);
+  await call(f, 'post', '/sales', input, key).expect(201);
+  assert.equal((await call(f, 'get', '/wallets/' + source._id)).body.balanceMinor, 9000);
+  assert.equal((await call(f, 'get', '/wallets/' + auto._id)).body.balanceMinor, 1000);
+  const changed = (
+    await call(f, 'patch', `/sales/${sale._id}/commissions`, {
+      revision: sale.revision,
+      commissions: [{ contactId: contact._id, walletId: assigned._id, type: 'fixed', value: 2000 }],
+    }).expect(200)
+  ).body;
+  assert.equal((await call(f, 'get', '/wallets/' + auto._id)).body.balanceMinor, 0);
+  assert.equal((await call(f, 'get', '/wallets/' + assigned._id)).body.balanceMinor, 2000);
+  assert.equal((await call(f, 'get', '/wallets/' + source._id)).body.balanceMinor, 8000);
+  const transfer = await db
+    .collection('movements')
+    .findOne({ saleId: sale._id, commissionSettlement: true });
+  await call(f, 'post', `/movements/${transfer._id}/cancellations`, {
+    revision: transfer.revision,
+    reason: 'No se cambia fuera de la venta',
+  }).expect(422);
+  await call(f, 'post', '/movements', {
+    walletId: assigned._id,
+    kind: 'expense',
+    amountMinor: 2000,
+    category: 'Pago',
+    description: 'Pagado',
+  }).expect(201);
+  const count = await db.collection('movements').countDocuments({ businessId: f.business._id });
+  await call(f, 'patch', `/sales/${sale._id}/commissions`, {
+    revision: changed.revision,
+    commissions: [],
+  }).expect(422);
+  assert.equal(
+    await db.collection('movements').countDocuments({ businessId: f.business._id }),
+    count,
+  );
+  assert.equal((await call(f, 'get', '/sales/' + sale._id)).body.commissionTotalMinor, 2000);
+  const foreign = await fixture(),
+    foreignWallet = await wallet(foreign, 0);
+  await call(f, 'post', '/sales', {
+    ...input,
+    commissions: [{ name: 'Ajeno', walletId: foreignWallet._id, type: 'fixed', value: 100 }],
+  }).expect(404);
+  const free = { ...input, commissions: [{ name: 'Vendedor libre', type: 'fixed', value: 100 }] };
+  const results = await Promise.all([
+    call(f, 'post', '/sales', free),
+    call(f, 'post', '/sales', free),
+  ]);
+  assert.ok(results.every((r) => r.status === 201));
+  assert.equal(results[0].body.commissions[0].walletId, results[1].body.commissions[0].walletId);
+  assert.equal(
+    (await call(f, 'get', '/wallets/' + results[0].body.commissions[0].walletId)).body.balanceMinor,
+    200,
+  );
+});
+
 test('Contact commissioner profiles link only workspace users, scope service conditions and snapshot negotiated commissions', async () => {
   const f = await fixture(),
     w = await wallet(f, 0),
@@ -995,7 +1086,7 @@ test('Service catalog consumes internal-only materials, preserves the service ch
   assert.equal(conversion.costMinor, 5500);
   assert.equal(conversion.lines[0].materials[0].allocations[0].batchId, stocked.batches[0].id);
 });
-test('Per-sale commissions use discounted revenue or gross profit, preserve contact snapshots and never withdraw cash', async () => {
+test('Per-sale commissions use discounted revenue or gross profit, preserve contact snapshots and allocate internally without duplicating cash', async () => {
   const f = await fixture(),
     w = await wallet(f, 0);
   const list = (await call(f, 'post', '/contact-lists', { name: 'Comisionistas' }).expect(201))
@@ -1028,8 +1119,8 @@ test('Per-sale commissions use discounted revenue or gross profit, preserve cont
   );
   assert.equal(sale.commissions[0].name, 'Ana');
   assert.equal((await call(f, 'post', '/sales', input, key).expect(201)).body._id, sale._id);
-  assert.equal((await db.collection('wallets').findOne({ _id: w._id })).balanceMinor, 36000);
-  assert.equal(await db.collection('movements').countDocuments({ businessId: f.business._id }), 1);
+  assert.equal((await db.collection('wallets').findOne({ _id: w._id })).balanceMinor, 27350);
+  assert.equal(await db.collection('movements').countDocuments({ businessId: f.business._id }), 7);
   await call(f, 'patch', '/contacts/' + contact._id, {
     name: 'Ana nueva',
     revision: contact.revision,
@@ -1052,7 +1143,7 @@ test('Per-sale commissions use discounted revenue or gross profit, preserve cont
     ...input,
     commissions: [{ contactId: foreign._id, type: 'fixed', value: 100 }],
   }).expect(404);
-  assert.equal((await db.collection('wallets').findOne({ _id: w._id })).balanceMinor, 36000);
+  assert.equal((await db.collection('wallets').findOne({ _id: w._id })).balanceMinor, 27350);
   const quote = (
     await call(f, 'post', '/quotes', {
       title: 'Con comisión al vender',

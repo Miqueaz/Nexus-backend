@@ -1,4 +1,5 @@
 import { createContactNotifications } from './modules/contacts/notifications.js';
+import { createCommissionWallets } from './adapters/modules/commission-wallets.js';
 import { createContactUsers } from './adapters/mongo/contact-users.js';
 import { createDebtCorrections } from './modules/debts/corrections.js';
 import { createMovementCorrections } from './modules/finance/corrections.js';
@@ -50,6 +51,7 @@ export async function createContainer({ client, db, config, logger, googleIdenti
     logger,
   });
   const workspaceAccess = createWorkspaceAccess(db);
+  const moduleAccess = createModuleAccessAdapter(platform);
   const commands = createCommands({
     workspaceAccess,
     platform,
@@ -57,14 +59,21 @@ export async function createContainer({ client, db, config, logger, googleIdenti
     idempotency,
     audit,
     logger,
-    moduleAccess: createModuleAccessAdapter(platform),
+    moduleAccess,
   });
   const finance = createFinanceAdapter();
   const financialManagement = createFinancialManagementAdapter();
   const inventory = createInventoryAdapter();
   const saleLines = createSaleLinesAdapter(inventory);
   const contacts = createContactsAdapter();
-  const sales = createSalesService({ commands, inventory: saleLines, finance, contacts });
+  const commissionWallets = createCommissionWallets({ moduleAccess });
+  const sales = createSalesService({
+    commands,
+    inventory: saleLines,
+    finance,
+    contacts,
+    commissionWallets,
+  });
   return {
     platform,
     auth: await createAuthService({
@@ -107,6 +116,7 @@ export async function createContainer({ client, db, config, logger, googleIdenti
     notifications: createContactNotifications({ db, uow, workspaceAccess, audit, logger }),
     contacts: createContactsService({
       commands,
+      commissionWallets,
       contactUsers: createContactUsers(db, workspaceAccess),
     }),
     sales,

@@ -1,4 +1,5 @@
 import { requestedLink } from './user-links.js';
+import { randomUUID } from 'node:crypto';
 import { commissionProfile } from './commission-profile.js';
 import { ensure } from '../../core/errors.js';
 import { parsePatch, z, text, notes, id, revision, values } from '../../core/validation.js';
@@ -25,7 +26,7 @@ const schema = z.strictObject({
   notes,
   favorite: z.boolean().default(false),
 });
-export function createContactsService({ commands, contactUsers }) {
+export function createContactsService({ commands, contactUsers, commissionWallets }) {
   async function validateLinks(tx, d) {
     if (d.userId) await contactUsers.assert(tx, d.userId);
     if (d.commissionProfile)
@@ -52,7 +53,25 @@ export function createContactsService({ commands, contactUsers }) {
       return commands.run(ctx, 'contact.created', d, async (tx) => {
         await validateListValues(tx, 'contactLists', d.listIds, d.values);
         await validateLinks(tx, d);
-        return tx.insert('contacts', { ...requestedLink(ctx, d), archived: false });
+        const contactId = randomUUID();
+        let profile = d.commissionProfile;
+        if (profile?.enabled) {
+          const wallet = await commissionWallets.resolve(
+            tx,
+            { contactId, name: d.name, walletId: profile.walletId, newContact: true },
+            true,
+          );
+          profile = { ...profile, walletId: wallet._id };
+        }
+        return tx.insert(
+          'contacts',
+          {
+            ...requestedLink(ctx, d),
+            ...(profile ? { commissionProfile: profile } : {}),
+            archived: false,
+          },
+          contactId,
+        );
       });
     },
     update(ctx, contactId, input) {
@@ -66,7 +85,26 @@ export function createContactsService({ commands, contactUsers }) {
         const next = { ...old, ...d };
         await validateLinks(tx, d);
         await validateListValues(tx, 'contactLists', next.listIds, next.values);
-        return tx.update('contacts', contactId, d.revision, requestedLink(ctx, d, old));
+        let profile = d.commissionProfile;
+        if (profile?.enabled) {
+          const requested = Object.hasOwn(d.commissionProfile, 'walletId')
+            ? d.commissionProfile.walletId
+            : old.commissionProfile?.walletId;
+          const wallet = await commissionWallets.resolve(
+            tx,
+            { contactId, name: next.name, walletId: requested },
+            requested !== old.commissionProfile?.walletId ||
+              !old.commissionProfile?.enabled ||
+              !old.commissionProfile?.walletId,
+          );
+          profile = { ...d.commissionProfile, walletId: wallet._id };
+        }
+        return tx.update(
+          'contacts',
+          contactId,
+          d.revision,
+          requestedLink(ctx, { ...d, ...(profile ? { commissionProfile: profile } : {}) }, old),
+        );
       });
     },
   };

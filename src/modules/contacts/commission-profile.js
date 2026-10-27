@@ -10,6 +10,7 @@ export const commissionTerms = z
 export const commissionProfile = z
   .strictObject({
     enabled: z.boolean(),
+    walletId: id.nullable().optional(),
     default: commissionTerms,
     services: z
       .array(commissionTerms.safeExtend({ serviceId: id }))
