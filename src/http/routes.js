@@ -131,6 +131,7 @@ export function createRoutes(s) {
   write('patch', '/docs/:id', (r) => s.docs.archive(r.context, r.params.id, r.body), {
     idempotent: true,
   });
+  read('/contacts/linkable-users', (r) => s.contacts.users(r.context));
   read('/members', (r) => s.businesses.members(r.context));
   write('post', '/members', (r) => s.businesses.addMember(r.context, r.body), create);
   write('patch', '/members/:memberId', (r) =>

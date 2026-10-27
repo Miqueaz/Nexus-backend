@@ -5,7 +5,7 @@ export function createContactsAdapter() {
       if (!id) return;
       const c = await tx.get('contacts', id);
       ensure(!c.archived, 422, 'CONTACT_ARCHIVED', 'Contacto archivado');
-      return { _id: c._id, name: c.name };
+      return { _id: c._id, name: c.name, ...(c.userId ? { userId: c.userId } : {}) };
     },
   };
 }

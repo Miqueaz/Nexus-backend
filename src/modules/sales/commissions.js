@@ -1,8 +1,10 @@
 import { z, id, text, notes, money } from '../../core/validation.js';
-import { roundRatio, safeInteger } from '../../core/money.js';
+import { ensure } from '../../core/errors.js';
+import { roundRatio, safeInteger, lineAmount } from '../../core/money.js';
 export const commissionSchema = z
   .strictObject({
     contactId: id.optional(),
+    serviceId: id.optional(),
     name: text.optional(),
     type: z.enum(['percent', 'fixed']),
     value: money,
@@ -27,8 +29,37 @@ export async function calculateCommissions(tx, input, commercial, contacts) {
     const contact = commission.contactId
       ? await contacts.assertCustomer(tx, commission.contactId)
       : null;
-    const baseMinor =
-      commission.base === 'profit' ? Math.max(0, commercial.profitMinor) : commercial.totalMinor;
+    let totalMinor = commercial.totalMinor,
+      profitMinor = commercial.profitMinor,
+      serviceName;
+    if (commission.serviceId) {
+      const lines = (commercial.lines || []).filter((l) => l.serviceId === commission.serviceId);
+      ensure(
+        lines.length,
+        422,
+        'COMMISSION_SERVICE',
+        'La comisión debe corresponder a un servicio incluido en esta venta',
+      );
+      const subtotal = lines.reduce(
+        (n, l) => safeInteger(n + lineAmount(l.unitPriceMinor, l.quantityMilli)),
+        0,
+      );
+      const cost = lines.reduce(
+        (n, l) =>
+          safeInteger(
+            n +
+              (l.costTotalMinor ??
+                lineAmount(l.unitCostMinor, l.consumedQuantityMilli ?? l.quantityMilli)),
+          ),
+        0,
+      );
+      totalMinor = commercial.subtotalMinor
+        ? roundRatio(BigInt(commercial.totalMinor) * BigInt(subtotal), commercial.subtotalMinor)
+        : 0;
+      profitMinor = totalMinor - cost;
+      serviceName = lines[0].name;
+    }
+    const baseMinor = commission.base === 'profit' ? Math.max(0, profitMinor) : totalMinor;
     const amountMinor =
       commission.type === 'fixed'
         ? commission.value
@@ -37,6 +68,8 @@ export async function calculateCommissions(tx, input, commercial, contacts) {
     commissions.push({
       ...commission,
       name: contact?.name || commission.name,
+      ...(contact?.userId ? { userId: contact.userId } : {}),
+      ...(serviceName ? { serviceName } : {}),
       baseMinor,
       amountMinor,
     });

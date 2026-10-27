@@ -1,5 +1,16 @@
 # API v1
 
+## Contactos, usuarios y condiciones de comisión
+
+Los contactos admiten `userId` (UUID o null para desvincular) y `commissionProfile: {enabled,default:{type,value,base,description},services:[{serviceId,type,value,base,description}]}`. Tipo `percent` (puntos base: 1500 = 15%) o `fixed` (centavos); base `sale` o `profit`. Máximo 50 servicios sin repetir. Las condiciones se guardan al crear o editar el contacto con su revisión. Cada servicio debe pertenecer al mismo negocio.
+
+`GET /businesses/:businessId/contacts/linkable-users` devuelve `{data:[{_id,name,email}],nextCursor:null}` de los usuarios con acceso activo al espacio. Requiere lectura de Contactos. Vincular una ficha valida esa pertenencia dentro de la transacción, no crea cuentas ni concede permisos.
+
+Las comisiones de venta aceptan `serviceId` opcional. Cuando está presente, debe existir entre las líneas de la venta y su base se calcula solo sobre ese servicio, prorrateando el descuento del total con redondeo a centavos; la base de ganancia descuenta el costo real registrado de esas líneas. Un monto fijo es el total de esa comisión para la venta, no un multiplicador automático por unidades. Sin `serviceId` se conserva la base de toda la venta.
+
+El cliente aplica las condiciones guardadas al seleccionar un comisionista y permite cambiarlas por operación. La venta guarda los valores negociados y las instantáneas `contactId`, `name`, `userId` y `serviceName` cuando corresponden; los cambios posteriores en el contacto o sus condiciones no reescriben ventas. El pago de comisiones sigue registrándose aparte. No requiere nuevas colecciones ni migración.
+
+
 ## Ajustes y cancelaciones con historial
 
 - `POST /businesses/:businessId/movements/:id/corrections`: `{revision,reason,replacement:{walletId,kind,amountMinor,category,description,occurredOn,toWalletId?}}`. `kind`: `income`, `expense` o `transfer`. Una transferencia conserva su tipo y requiere dos carteras distintas.

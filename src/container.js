@@ -1,3 +1,4 @@
+import { createContactUsers } from './adapters/mongo/contact-users.js';
 import { createDebtCorrections } from './modules/debts/corrections.js';
 import { createMovementCorrections } from './modules/finance/corrections.js';
 import { createServiceCatalog } from './modules/services/service.js';
@@ -102,7 +103,10 @@ export async function createContainer({ client, db, config, logger, googleIdenti
       collection: 'contactLists',
       entryCollection: 'contacts',
     }),
-    contacts: createContactsService({ commands }),
+    contacts: createContactsService({
+      commands,
+      contactUsers: createContactUsers(db, workspaceAccess),
+    }),
     sales,
     serviceCatalog: createServiceCatalog({ commands, inventory }),
     quotes: createQuotesService({

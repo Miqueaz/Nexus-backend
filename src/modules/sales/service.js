@@ -11,7 +11,7 @@ export function createSalesService({ commands, inventory, finance, contacts }) {
     const commissions = await calculateCommissions(
       tx,
       input.commissions || [],
-      commercial,
+      { ...commercial, lines },
       contacts,
     );
     const saleId = randomUUID();

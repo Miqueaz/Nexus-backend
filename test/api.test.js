@@ -66,6 +66,129 @@ async function fixture() {
     .expect(201);
   return { ...u, business: r.body, base: `/api/v1/businesses/${r.body._id}` };
 }
+
+test('Contact commissioner profiles link only workspace users, scope service conditions and snapshot negotiated commissions', async () => {
+  const f = await fixture(),
+    w = await wallet(f, 0),
+    outsider = await user(),
+    teammate = await user();
+  await call(f, 'post', '/members', { email: teammate.email, role: 'viewer' }).expect(201);
+  const users = (await call(f, 'get', '/contacts/linkable-users').expect(200)).body.data;
+  assert.ok(users.some((u) => u._id === f.id));
+  assert.ok(users.some((u) => u._id === teammate.id));
+  assert.ok(!users.some((u) => u._id === outsider.id));
+  assert.ok(users.every((u) => Object.keys(u).every((k) => ['_id', 'name', 'email'].includes(k))));
+  const list = (
+    await call(f, 'post', '/contact-lists', { name: 'Comisionistas', fields: [] }).expect(201)
+  ).body;
+  const service = (
+    await call(f, 'post', '/services', {
+      name: 'Polarizado',
+      priceMinor: 40000,
+      materials: [],
+    }).expect(201)
+  ).body;
+  const second = (
+    await call(f, 'post', '/services', {
+      name: 'Instalación',
+      priceMinor: 60000,
+      materials: [],
+    }).expect(201)
+  ).body;
+  const profile = {
+    enabled: true,
+    default: { type: 'percent', value: 500, base: 'sale', description: 'Comisión general' },
+    services: [
+      {
+        serviceId: service._id,
+        type: 'percent',
+        value: 1500,
+        base: 'sale',
+        description: 'Polarizado acordado',
+      },
+    ],
+  };
+  const input = { name: 'Ana', listIds: [list._id], userId: f.id, commissionProfile: profile };
+  await call(f, 'post', '/contacts', { ...input, userId: outsider.id }).expect(422);
+  const c = (await call(f, 'post', '/contacts', input).expect(201)).body;
+  assert.equal(c.userId, f.id);
+  assert.equal(c.commissionProfile.services[0].value, 1500);
+  await call(f, 'patch', '/contacts/' + c._id, {
+    revision: 1,
+    commissionProfile: { ...profile, services: [...profile.services, ...profile.services] },
+  }).expect(422);
+  const saleInput = {
+    walletId: w._id,
+    lines: [
+      { serviceId: service._id, quantityMilli: 1000 },
+      { serviceId: second._id, quantityMilli: 1000 },
+    ],
+    discount: { type: 'percent', value: 1000, reason: 'Promoción' },
+    commissions: [
+      {
+        contactId: c._id,
+        serviceId: service._id,
+        type: 'percent',
+        value: 1500,
+        base: 'sale',
+        description: 'Acuerdo aplicado',
+      },
+    ],
+  };
+  const sale = (await call(f, 'post', '/sales', saleInput).expect(201)).body;
+  assert.equal(sale.totalMinor, 90000);
+  assert.equal(sale.commissionTotalMinor, 5400);
+  assert.equal(sale.commissions[0].baseMinor, 36000);
+  assert.equal(sale.commissions[0].userId, f.id);
+  assert.equal(sale.commissions[0].serviceName, 'Polarizado');
+  assert.equal(sale.netProfitMinor, 84600);
+  await call(f, 'patch', '/contacts/' + c._id, {
+    revision: 1,
+    userId: teammate.id,
+    commissionProfile: { ...profile, default: { ...profile.default, value: 2000 } },
+  }).expect(200);
+  const stored = (await call(f, 'get', '/sales/' + sale._id).expect(200)).body;
+  assert.equal(stored.commissionTotalMinor, 5400);
+  assert.equal(stored.commissions[0].userId, f.id);
+  const edited = (
+    await call(f, 'patch', `/sales/${sale._id}/commissions`, {
+      revision: 1,
+      commissions: [
+        {
+          contactId: c._id,
+          serviceId: service._id,
+          type: 'fixed',
+          value: 2000,
+          base: 'sale',
+          description: 'Excepción de esta venta',
+        },
+      ],
+    }).expect(200)
+  ).body;
+  assert.equal(edited.commissionTotalMinor, 2000);
+  assert.equal(edited.commissions[0].userId, teammate.id);
+  await call(f, 'post', '/sales', {
+    ...saleInput,
+    commissions: [{ ...saleInput.commissions[0], serviceId: randomUUID() }],
+  }).expect(422);
+  const foreign = await fixture(),
+    foreignService = (
+      await call(foreign, 'post', '/services', {
+        name: 'Ajeno',
+        priceMinor: 100,
+        materials: [],
+      }).expect(201)
+    ).body;
+  await call(f, 'patch', '/contacts/' + c._id, {
+    revision: 2,
+    commissionProfile: {
+      ...profile,
+      services: [{ ...profile.services[0], serviceId: foreignService._id }],
+    },
+  }).expect(404);
+  await call(f, 'patch', '/contacts/' + c._id, { revision: 2, userId: null }).expect(200);
+  assert.equal((await call(f, 'get', '/contacts/' + c._id).expect(200)).body.userId, null);
+});
 function call(f, method, path, body, key = randomUUID()) {
   let r = request(app)
     [method](f.base + path)
@@ -135,13 +258,11 @@ test('Movement corrections preserve originals, audit reasons, exact balances and
   const history = (await call(f, 'get', `/movements/${original._id}/changes`).expect(200)).body;
   assert.equal(history.rows.length, 2);
   assert.equal(history.rows[1].changeReason, 'Compra no realizada');
-  const audit = await db
-    .collection('audit')
-    .findOne({
-      businessId: f.business._id,
-      action: 'finance.movement.corrected',
-      entityId: original._id,
-    });
+  const audit = await db.collection('audit').findOne({
+    businessId: f.business._id,
+    action: 'finance.movement.corrected',
+    entityId: original._id,
+  });
   assert.equal(audit.actorId, f.id);
   assert.equal(audit.after.changeReason, body.reason);
   assert.equal(audit.before.amountMinor, audit.after.amountMinor);
