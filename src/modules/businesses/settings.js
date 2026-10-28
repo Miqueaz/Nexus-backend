@@ -117,6 +117,8 @@ export function businessSettings(business) {
       saleCommissions: 1,
       commissionerProfiles: 1,
       commissionWallets: 1,
+      serviceProductPricing: 1,
+      chargedDiscount: 1,
       associationConsent: 1,
       namedCustomers: 1,
       movementCorrections: 1,

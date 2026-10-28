@@ -9,7 +9,7 @@ export const qty = z.number().int().positive().max(1_000_000_000); // milésimas
 export const date = z.iso.date();
 export const revision = z.number().int().positive();
 export const discount = z
-  .strictObject({ type: z.enum(['percent', 'fixed']), value: money, reason: notes })
+  .strictObject({ type: z.enum(['percent', 'fixed', 'charged']), value: money, reason: notes })
   .refine((d) => d.type !== 'percent' || d.value <= 10000, 'Porcentaje máximo: 10000 puntos base')
   .default({ type: 'fixed', value: 0, reason: '' });
 export const field = z.strictObject({

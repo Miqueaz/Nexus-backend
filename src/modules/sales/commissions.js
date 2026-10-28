@@ -1,6 +1,6 @@
 import { z, id, text, notes, money } from '../../core/validation.js';
 import { ensure } from '../../core/errors.js';
-import { roundRatio, safeInteger, lineAmount } from '../../core/money.js';
+import { roundRatio, safeInteger, lineAmount, lineRevenue } from '../../core/money.js';
 export const commissionSchema = z
   .strictObject({
     contactId: id.optional(),
@@ -41,10 +41,7 @@ export async function calculateCommissions(tx, input, commercial, contacts) {
         'COMMISSION_SERVICE',
         'La comisión debe corresponder a un servicio incluido en esta venta',
       );
-      const subtotal = lines.reduce(
-        (n, l) => safeInteger(n + lineAmount(l.unitPriceMinor, l.quantityMilli)),
-        0,
-      );
+      const subtotal = lines.reduce((n, l) => safeInteger(n + lineRevenue(l)), 0);
       const cost = lines.reduce(
         (n, l) =>
           safeInteger(

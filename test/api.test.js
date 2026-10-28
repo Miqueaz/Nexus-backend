@@ -67,6 +67,178 @@ async function fixture() {
   return { ...u, business: r.body, base: `/api/v1/businesses/${r.body._id}` };
 }
 
+test('Service prices include sellable products before discount, exact charged totals and commissions, while quotes freeze their price', async () => {
+  const f = await fixture(),
+    w = await wallet(f, 0);
+  const list = (
+    await call(f, 'post', '/inventory-lists', { name: 'Servicio y productos' }).expect(201)
+  ).body;
+  async function product(name, sellable, priceMinor, costMinor) {
+    const p = (
+      await call(f, 'post', '/items', {
+        name,
+        listIds: [list._id],
+        sellable,
+        priceMinor,
+        costMinor,
+        unit: 'piezas',
+      }).expect(201)
+    ).body;
+    return (
+      await call(f, 'post', `/items/${p._id}/adjustments`, {
+        deltaMilli: 10000,
+        reason: 'Inicial',
+        revision: p.revision,
+      }).expect(201)
+    ).body.item;
+  }
+  const saleProduct = await product('Producto vendible', true, 10000, 2000),
+    internal = await product('Material interno', false, 99999, 1000);
+  const service = (
+    await call(f, 'post', '/services', {
+      name: 'Servicio',
+      priceMinor: 40000,
+      materials: [
+        { itemId: saleProduct._id, quantityMilli: 1000, unit: 'piezas' },
+        { itemId: internal._id, quantityMilli: 1000, unit: 'piezas' },
+      ],
+    }).expect(201)
+  ).body;
+  const input = {
+    walletId: w._id,
+    lines: [{ serviceId: service._id, quantityMilli: 1000 }],
+    discount: { type: 'percent', value: 1000 },
+    commissions: [{ name: 'Comisionista', serviceId: service._id, type: 'percent', value: 1000 }],
+  };
+  const key = randomUUID(),
+    sale = (await call(f, 'post', '/sales', input, key).expect(201)).body;
+  assert.equal(sale.subtotalMinor, 50000);
+  assert.equal(sale.totalMinor, 45000);
+  assert.equal(sale.costMinor, 3000);
+  assert.equal(sale.commissionTotalMinor, 4500);
+  assert.equal(sale.lines[0].materialSalesMinor, 10000);
+  assert.equal(sale.lines[0].materials[1].saleTotalMinor, 0);
+  await call(f, 'post', '/sales', input, key).expect(201);
+  assert.equal((await call(f, 'get', '/items/' + saleProduct._id)).body.stockMilli, 9000);
+  const exact = (
+    await call(f, 'post', '/sales', {
+      ...input,
+      commissions: [],
+      discount: { type: 'charged', value: 42000, reason: 'Precio acordado' },
+    }).expect(201)
+  ).body;
+  assert.equal(exact.totalMinor, 42000);
+  assert.equal(exact.discountMinor, 8000);
+  assert.equal(exact.discount.type, 'charged');
+  const before = await db.collection('movements').countDocuments({ businessId: f.business._id });
+  await call(f, 'post', '/sales', { ...input, discount: { type: 'charged', value: 50001 } }).expect(
+    422,
+  );
+  assert.equal(
+    await db.collection('movements').countDocuments({ businessId: f.business._id }),
+    before,
+  );
+  const quote = (
+    await call(f, 'post', '/quotes', {
+      title: 'Precio acordado',
+      expiresOn: '2099-12-31',
+      lines: input.lines,
+      discount: { type: 'charged', value: 45000 },
+    }).expect(201)
+  ).body;
+  await db.collection('items').updateOne({ _id: saleProduct._id }, { $set: { priceMinor: 50000 } });
+  const accepted = (
+    await call(f, 'post', `/quotes/${quote._id}/status`, {
+      status: 'accepted',
+      revision: quote.revision,
+    }).expect(200)
+  ).body;
+  const converted = (
+    await call(f, 'post', `/quotes/${quote._id}/convert`, {
+      walletId: w._id,
+      revision: accepted.revision,
+    }).expect(201)
+  ).body;
+  assert.equal(converted.subtotalMinor, 50000);
+  assert.equal(converted.totalMinor, 45000);
+  assert.equal(converted.lines[0].materials[0].saleTotalMinor, 10000);
+  const client = (await call(f, 'get', `/quotes/${quote._id}/client-view`).expect(200)).body;
+  assert.equal(client.lines[0].revenueMinor, 50000);
+  assert.equal(client.lines[0].products[0].totalMinor, 10000);
+  assert.equal(client.lines[0].products[0].unitCostMinor, undefined);
+});
+
+test('Service product charges honor measure and fixed pricing and do not require stock tracking for sellable extras', async () => {
+  const f = await fixture(),
+    w = await wallet(f, 0),
+    list = (await call(f, 'post', '/inventory-lists', { name: 'Medidas' }).expect(201)).body;
+  const measured = (
+    await call(f, 'post', '/items', {
+      name: 'Por cm',
+      listIds: [list._id],
+      unit: 'm',
+      priceMinor: 3,
+      costMinor: 100,
+      stockConfig: { pricing: 'measure', priceUnit: 'cm', tracking: 'aggregate' },
+    }).expect(201)
+  ).body;
+  const fixed = (
+    await call(f, 'post', '/items', {
+      name: 'Precio fijo',
+      listIds: [list._id],
+      unit: 'm',
+      priceMinor: 20000,
+      costMinor: 100,
+      stockConfig: { pricing: 'fixed', tracking: 'aggregate' },
+    }).expect(201)
+  ).body;
+  for (const p of [measured, fixed])
+    await call(f, 'post', `/items/${p._id}/adjustments`, {
+      deltaMilli: 10000,
+      reason: 'Inicial',
+      revision: p.revision,
+    }).expect(201);
+  const untracked = (
+    await call(f, 'post', '/items', {
+      name: 'Extra sin conteo',
+      listIds: [list._id],
+      unit: 'unidad',
+      trackStock: false,
+      sellable: true,
+      priceMinor: 2500,
+      costMinor: 200,
+    }).expect(201)
+  ).body;
+  const sale = (
+    await call(f, 'post', '/sales', {
+      walletId: w._id,
+      lines: [
+        {
+          name: 'Trabajo',
+          unitPriceMinor: 40000,
+          quantityMilli: 1000,
+          materials: [
+            { itemId: measured._id, quantityMilli: 55000, unit: 'cm' },
+            { itemId: fixed._id, quantityMilli: 55000, unit: 'cm' },
+            { itemId: untracked._id, quantityMilli: 2000, unit: 'unidad' },
+          ],
+        },
+      ],
+      discount: { type: 'charged', value: 60000 },
+    }).expect(201)
+  ).body;
+  assert.equal(sale.subtotalMinor, 65165);
+  assert.equal(sale.totalMinor, 60000);
+  assert.equal(sale.discountMinor, 5165);
+  assert.equal(sale.costMinor, 510);
+  assert.deepEqual(
+    sale.lines[0].materials.map((m) => m.saleTotalMinor),
+    [165, 20000, 5000],
+  );
+  assert.equal((await call(f, 'get', '/items/' + measured._id)).body.stockMilli, 9450);
+  assert.equal((await call(f, 'get', '/items/' + untracked._id)).body.stockMilli, 0);
+});
+
 test('Commission wallets allocate once, reuse identities and adjust differences atomically', async () => {
   const f = await fixture(),
     source = await wallet(f, 0),

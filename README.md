@@ -202,3 +202,10 @@ Cada perfil habilitado puede asignar `commissionProfile.walletId` o dejarlo vac�
 Al registrar una venta se ingresa el cobro una vez y se distribuyen las comisiones entre carteras con transferencias internas de efecto operativo cero. El saldo total del negocio se conserva. Elegir la misma cartera del cobro mantiene el dinero ahí. Editar comisiones mueve únicamente las diferencias contra las asignaciones guardadas; se conservan los movimientos anteriores y la auditoría. Si falta saldo para devolver una asignación, el ajuste completo se rechaza sin cambios parciales. No se ejecutan pagos bancarios externos.
 
 No se redistribuyen ventas antiguas automáticamente. Las nuevas ventas y las ediciones explícitas de comisiones aplican esta distribución. Los cambios de perfil afectan condiciones futuras, no ventas anteriores. La capacidad `commissionWallets: 1` habilita los controles; la API valida destinos del mismo negocio, revisión, permisos e idempotencia.
+
+
+### Servicios, productos para venta y monto cobrado
+
+La venta de servicio suma el precio base y los productos habilitados para venta de su receta. El cobro de cada producto respeta su configuración por pieza, medida o precio fijo; los materiales internos solo aportan costo y consumo. Los productos para venta sin conteo también se pueden agregar sin movimientos de stock. El descuento se aplica al subtotal combinado y las comisiones usan el total posterior al descuento.
+
+`discount.type = "charged"` interpreta `value` como el total final en centavos: `descuento = subtotal - monto cobrado`. Se valida que esté entre cero y el subtotal, incluidos centavos y cobros de cero. El servicio conserva precio base, ingresos por productos y total de línea en sus snapshots. Las cotizaciones conservan el precio de productos acordado al convertirse; las ventas anteriores no se recalculan. Capacidades: `serviceProductPricing: 1`, `chargedDiscount: 1`.

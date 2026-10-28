@@ -1,16 +1,21 @@
 import { convertQuantity, adjustBatches } from '../../modules/inventory/materials.js';
 import { ensure } from '../../core/errors.js';
+import { lineAmount } from '../../core/money.js';
 export function createInventoryAdapter() {
   return {
-    async prepareMaterials(tx, materials) {
+    async prepareMaterials(
+      tx,
+      materials,
+      { serviceQuantityMilli = 1000, priceMaterials = true } = {},
+    ) {
       const snapshots = [];
       for (const material of materials) {
         const item = await tx.get('items', material.itemId);
         ensure(
-          !item.archived && item.trackStock,
+          !item.archived && (item.trackStock || item.sellable),
           422,
           'MATERIAL_UNAVAILABLE',
-          'El material debe estar activo y tener conteo de existencias',
+          'El material o producto debe estar activo y ser consumible o estar habilitado para venta',
         );
         const source = material.consumption || material;
         const consumedQuantityMilli = convertQuantity(source.quantityMilli, source.unit, item.unit);
@@ -20,6 +25,23 @@ export function createInventoryAdapter() {
           'INVALID_CONSUMPTION',
           'El consumo debe ser mayor que cero',
         );
+        const frozen = Object.hasOwn(material, 'saleTotalMinor');
+        ensure(
+          !frozen || (material.stockUnit || material.unit) === item.unit,
+          409,
+          'QUOTE_MATERIAL_CHANGED',
+          'Cambió la unidad del material; actualiza la cotización',
+        );
+        const pricing = item.stockConfig?.pricing || 'unit';
+        const billedUnit =
+          pricing === 'measure' ? item.stockConfig?.priceUnit || item.unit : item.unit;
+        const billedQuantityMilli =
+          pricing === 'fixed'
+            ? serviceQuantityMilli
+            : pricing === 'measure'
+              ? convertQuantity(consumedQuantityMilli, item.unit, billedUnit)
+              : consumedQuantityMilli;
+        const sellable = priceMaterials && (frozen ? material.sellable : item.sellable);
         snapshots.push({
           itemId: item._id,
           name: item.name,
@@ -28,8 +50,17 @@ export function createInventoryAdapter() {
           quantityMilli: consumedQuantityMilli,
           consumedQuantityMilli,
           unitPriceMinor: 0,
+          sellable: !!sellable,
+          billedUnit: frozen ? material.billedUnit : billedUnit,
+          billedQuantityMilli: frozen ? material.billedQuantityMilli : billedQuantityMilli,
+          billedUnitPriceMinor: frozen ? material.billedUnitPriceMinor : item.priceMinor,
+          saleTotalMinor: sellable
+            ? frozen
+              ? material.saleTotalMinor
+              : lineAmount(item.priceMinor, billedQuantityMilli)
+            : 0,
           unitCostMinor: item.costMinor,
-          trackStock: true,
+          trackStock: item.trackStock,
           consumption: {
             quantityMilli: source.quantityMilli,
             unit: source.unit,

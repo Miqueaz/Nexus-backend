@@ -16,11 +16,10 @@ export function roundRatio(numerator, denominator) {
 export function lineAmount(unitMinor, quantityMilli) {
   return roundRatio(BigInt(unitMinor) * BigInt(quantityMilli), 1000);
 }
+export const lineRevenue = (line) =>
+  line.revenueMinor ?? lineAmount(line.unitPriceMinor, line.quantityMilli);
 export function totals(lines, discount) {
-  const subtotalMinor = lines.reduce(
-    (sum, l) => safeInteger(sum + lineAmount(l.unitPriceMinor, l.quantityMilli)),
-    0,
-  );
+  const subtotalMinor = lines.reduce((sum, l) => safeInteger(sum + lineRevenue(l)), 0);
   const costMinor = lines.reduce(
     (sum, l) =>
       safeInteger(
@@ -33,12 +32,14 @@ export function totals(lines, discount) {
   const discountMinor =
     discount.type === 'percent'
       ? roundRatio(BigInt(subtotalMinor) * BigInt(discount.value), 10000)
-      : discount.value;
+      : discount.type === 'charged'
+        ? subtotalMinor - discount.value
+        : discount.value;
   ensure(
-    discountMinor <= subtotalMinor,
+    discountMinor >= 0 && discountMinor <= subtotalMinor,
     422,
     'INVALID_DISCOUNT',
-    'El descuento supera el subtotal',
+    'El descuento o monto cobrado debe estar entre cero y el subtotal',
   );
   return {
     subtotalMinor,

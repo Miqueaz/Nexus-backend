@@ -39,18 +39,32 @@ export function createSaleLinesAdapter(inventory) {
           'MATERIAL_LIMIT',
           'Una operación admite hasta 200 consumos de material',
         );
-        const snapshots = await inventory.prepareMaterials(tx, materials);
+        // Generated quote snapshots keep their agreed prices, including legacy quotes.
+        const snapshots = await inventory.prepareMaterials(tx, materials, {
+          serviceQuantityMilli: line.quantityMilli,
+          priceMaterials:
+            !Object.hasOwn(line, 'trackStock') || Object.hasOwn(line, 'materialSalesMinor'),
+        });
         const unitCostMinor = service ? 0 : line.unitCostMinor || 0;
         const costTotalMinor = snapshots.reduce(
           (sum, m) => safeInteger(sum + lineAmount(m.unitCostMinor, m.consumedQuantityMilli)),
           lineAmount(unitCostMinor, line.quantityMilli),
+        );
+        const unitPriceMinor = line.unitPriceMinor ?? service?.priceMinor;
+        const baseRevenueMinor = lineAmount(unitPriceMinor, line.quantityMilli);
+        const materialSalesMinor = snapshots.reduce(
+          (sum, m) => safeInteger(sum + m.saleTotalMinor),
+          0,
         );
         lines.push({
           ...line,
           name: line.name || service?.name,
           serviceRevision: service?.revision,
           unit: 'servicio',
-          unitPriceMinor: line.unitPriceMinor ?? service?.priceMinor,
+          unitPriceMinor,
+          baseRevenueMinor,
+          materialSalesMinor,
+          revenueMinor: safeInteger(baseRevenueMinor + materialSalesMinor),
           unitCostMinor,
           costTotalMinor,
           trackStock: false,

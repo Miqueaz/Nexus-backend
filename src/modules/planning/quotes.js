@@ -128,12 +128,22 @@ export function createQuotesService({ commands, inventory, contacts, sales }) {
           expiresOn: q.expiresOn,
           notes: q.notes,
           discount: q.discount,
-          lines: q.lines.map(({ name, unit, quantityMilli, unitPriceMinor }) => ({
-            name,
-            unit,
-            quantityMilli,
-            unitPriceMinor,
-          })),
+          lines: q.lines.map(
+            ({ name, unit, quantityMilli, unitPriceMinor, revenueMinor, materials }) => ({
+              name,
+              unit,
+              quantityMilli,
+              unitPriceMinor,
+              ...(revenueMinor !== undefined ? { revenueMinor } : {}),
+              ...(materials
+                ? {
+                    products: materials
+                      .filter((m) => m.saleTotalMinor > 0)
+                      .map((m) => ({ name: m.name, totalMinor: m.saleTotalMinor })),
+                  }
+                : {}),
+            }),
+          ),
           subtotalMinor: q.subtotalMinor,
           discountMinor: q.discountMinor,
           totalMinor: q.totalMinor,
