@@ -403,6 +403,20 @@ test('Workers exige índices de consistencia antes de operar una base nueva', as
   await assertDatabasePrepared(empty);
   await empty.dropDatabase();
 });
+test('Readiness forces a complete index check even after ordinary requests warm the preparation cache', async () => {
+  assert.equal((await call('GET', '/api/v1/auth/options')).status, 200);
+  const users = db.collection('users');
+  const indexes = await users.listIndexes().toArray();
+  const uniqueEmail = indexes.find((index) => index.unique && index.key.email === 1);
+  assert.ok(uniqueEmail);
+  await users.dropIndex(uniqueEmail.name);
+  // The test Worker enables auto-migration: readiness must detect and repair the missing index.
+  const ready = await call('GET', '/health/ready');
+  assert.equal(ready.status, 200, JSON.stringify(ready.data));
+  assert.ok(
+    (await users.listIndexes().toArray()).some((index) => index.unique && index.key.email === 1),
+  );
+});
 test('Dos ventas concurrentes en Workerd no consumen las mismas existencias', async () => {
   const f = await fixture();
   const w = await call(

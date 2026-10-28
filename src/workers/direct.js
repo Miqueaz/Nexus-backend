@@ -35,6 +35,8 @@ export async function directFetch(request, env) {
             poolSize: 1,
             monitoringMode: 'poll',
             appName: 'nexo-workers',
+            cachePreparation: true,
+            forcePreparationCheck: /^\/health\/ready\/?$/.test(new URL(request.url).pathname),
           });
           const services = await createContainer({ ...connection, config, logger });
           return { ...connection, services };

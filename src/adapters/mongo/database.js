@@ -1,4 +1,7 @@
 import { AppError } from '../../core/errors.js';
+import { createHash } from 'node:crypto';
+import { createPreparationCache } from './preparation-cache.js';
+const preparedDatabases = createPreparationCache();
 export const collections = [
   'organizations',
   'organizationMembers',
@@ -33,6 +36,8 @@ export async function connectDatabase(
     poolSize = 20,
     monitoringMode = 'auto',
     appName = 'nexo-backend',
+    cachePreparation = false,
+    forcePreparationCheck = false,
   } = {},
 ) {
   // El driver genera valores aleatorios al importarse: cargarlo dentro de una solicitud Workers.
@@ -54,14 +59,24 @@ export async function connectDatabase(
       throw new Error('MongoDB debe ser un replica set o clúster sharded para transacciones');
     if (initializeIndexes) await ensureIndexes(db);
     else {
-      try {
-        await assertDatabasePrepared(db);
-      } catch (error) {
-        if (!migrateIfNeeded || error.code !== 'DATABASE_NOT_PREPARED') throw error;
-        // Preparación idempotente de una base nueva; nunca elimina datos ni índices.
-        await ensureIndexes(db);
-        await assertDatabasePrepared(db);
-      }
+      const prepare = async () => {
+        try {
+          await assertDatabasePrepared(db);
+        } catch (error) {
+          if (!migrateIfNeeded || error.code !== 'DATABASE_NOT_PREPARED') throw error;
+          // Preparación idempotente de una base nueva; nunca elimina datos ni índices.
+          await ensureIndexes(db);
+          await assertDatabasePrepared(db);
+        }
+      };
+      if (cachePreparation) {
+        const key = createHash('sha256')
+          .update(config.mongoUri)
+          .update('\0')
+          .update(config.mongoDb)
+          .digest('hex');
+        await preparedDatabases.check(key, prepare, { force: forcePreparationCheck });
+      } else await prepare();
     }
     return { client, db };
   } catch (error) {

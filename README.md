@@ -209,3 +209,10 @@ No se redistribuyen ventas antiguas automáticamente. Las nuevas ventas y las ed
 La venta de servicio suma el precio base y los productos habilitados para venta de su receta. El cobro de cada producto respeta su configuración por pieza, medida o precio fijo; los materiales internos solo aportan costo y consumo. Los productos para venta sin conteo también se pueden agregar sin movimientos de stock. El descuento se aplica al subtotal combinado y las comisiones usan el total posterior al descuento.
 
 `discount.type = "charged"` interpreta `value` como el total final en centavos: `descuento = subtotal - monto cobrado`. Se valida que esté entre cero y el subtotal, incluidos centavos y cobros de cero. El servicio conserva precio base, ingresos por productos y total de línea en sus snapshots. Las cotizaciones conservan el precio de productos acordado al convertirse; las ventas anteriores no se recalculan. Capacidades: `serviceProductPricing: 1`, `chargedDiscount: 1`.
+
+
+### Verificación de índices en Workers
+
+El modo directo recuerda una verificación completa exitosa durante cinco minutos por instancia, URI y nombre de base (clave SHA-256, máximo 16 entradas). Las peticiones con verificación vigente omiten los doce comandos `listIndexes`. La primera petición de una instancia nueva y la primera después de vencer el plazo vuelven a validar todos los índices. Los errores no se almacenan; se conserva la preparación automática existente cuando `MONGO_AUTO_MIGRATE` está habilitado.
+
+`/health/ready` fuerza siempre la comprobación completa, aunque la verificación esté vigente. Esta memoria solo contiene fechas de vencimiento: nunca conexiones, sesiones, promesas de E/S, permisos ni datos del usuario. La autenticación, auditoría, transacciones y cierre de conexiones por petición siguen su flujo existente. Node conserva su verificación habitual. No requiere una migración ni variables nuevas.
