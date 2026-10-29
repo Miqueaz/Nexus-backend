@@ -1137,7 +1137,7 @@ test('Workerd protects administration and applies registration and module settin
 });
 
 test('Workerd stores scheduled payments without spending and confirms them once with a chosen wallet', async () => {
-  const f = await fixture(),
+  const f = await fixture('192.0.2.201'),
     startOn = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
   const wallet = await call(
     'POST',
@@ -1191,4 +1191,71 @@ test('Workerd stores scheduled payments without spending and confirms them once 
   );
   assert.equal(snapshot.status, 200);
   assert.equal(snapshot.data.collections['commitment-resolutions'].data.length, 1);
+});
+
+test('Workerd distributes one uniform line payment and creates a single wallet expense', async () => {
+  const f = await fixture('192.0.2.202');
+  const w = await call(
+    'POST',
+    f.base + '/wallets',
+    { name: 'Banco', openingBalanceMinor: 1000 },
+    f.token,
+    randomUUID(),
+  );
+  const line = await call(
+    'POST',
+    f.base + '/credit-lines',
+    { name: 'Uniforme', limitMinor: 1000 },
+    f.token,
+    randomUUID(),
+  );
+  for (const [i, n] of [100, 300].entries()) {
+    const d = await call(
+      'POST',
+      f.base + '/debts',
+      {
+        name: 'Compra ' + i,
+        kind: 'deferred',
+        creditLineId: line.data._id,
+        principalMinor: n,
+        terms: 1,
+        firstDueOn: '2027-01-01',
+      },
+      f.token,
+      randomUUID(),
+    );
+    assert.equal(d.status, 201, JSON.stringify(d.data));
+  }
+  const current = await call('GET', f.base + '/credit-lines/' + line.data._id, undefined, f.token),
+    body = {
+      walletId: w.data._id,
+      amountMinor: 300,
+      revision: current.data.revision,
+      distribution: 'uniform',
+    },
+    key = randomUUID();
+  const paid = await call(
+    'POST',
+    f.base + '/credit-lines/' + line.data._id + '/payments',
+    body,
+    f.token,
+    key,
+  );
+  assert.equal(paid.status, 201, JSON.stringify(paid.data));
+  assert.deepEqual(
+    paid.data.payments.map((p) => p.payment.amountMinor),
+    [100, 200],
+  );
+  const again = await call(
+    'POST',
+    f.base + '/credit-lines/' + line.data._id + '/payments',
+    body,
+    f.token,
+    key,
+  );
+  assert.equal(again.data.movement._id, paid.data.movement._id);
+  const wallet = await call('GET', f.base + '/wallets/' + w.data._id, undefined, f.token);
+  assert.equal(wallet.data.balanceMinor, 700);
+  const moves = await call('GET', f.base + '/movements', undefined, f.token);
+  assert.equal(moves.data.data.filter((m) => m.kind === 'debtPayment').length, 1);
 });

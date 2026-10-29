@@ -2834,13 +2834,11 @@ test('Scheduled commitments never spend automatically; confirmation and cancella
     .body;
   assert.equal(stop.archived, true);
   assert.equal(
-    await db
-      .collection('audit')
-      .countDocuments({
-        businessId: f.business._id,
-        action: 'commitment.resolved',
-        collection: 'commitmentResolutions',
-      }),
+    await db.collection('audit').countDocuments({
+      businessId: f.business._id,
+      action: 'commitment.resolved',
+      collection: 'commitmentResolutions',
+    }),
     2,
   );
 });
@@ -2863,4 +2861,105 @@ test('Concurrent confirmations of one scheduled payment create one expense and o
     await db.collection('commitmentResolutions').countDocuments({ commitmentId: p._id }),
     1,
   );
+});
+
+test('Uniform credit-line payments distribute equal shares, debit once, preserve statements and rollback together', async () => {
+  const f = await fixture(),
+    w = await wallet(f, 5000),
+    empty = await wallet(f, 0);
+  let line = (
+    await call(f, 'post', '/credit-lines', { name: 'Tarjeta uniforme', limitMinor: 5000 }).expect(
+      201,
+    )
+  ).body;
+  const debts = [];
+  for (const [i, n] of [100, 1000, 1000].entries())
+    debts.push(
+      (
+        await call(f, 'post', '/debts', {
+          name: 'Compra ' + i,
+          kind: 'deferred',
+          creditLineId: line._id,
+          principalMinor: n - 10,
+          feeMinor: 10,
+          terms: 1,
+          firstDueOn: '2027-0' + (i + 1) + '-01',
+        }).expect(201)
+      ).body,
+    );
+  line = (await call(f, 'get', '/credit-lines/' + line._id)).body;
+  const statement = (
+    await call(f, 'post', `/credit-lines/${line._id}/statements`, {
+      revision: line.revision,
+      periodStartOn: '2026-09-01',
+      cutoffOn: '2026-09-30',
+      dueOn: '2026-10-10',
+      revolvingMinor: 2100,
+      interestSource: 'captured',
+      interestMinor: 0,
+      vatMinor: 0,
+    }).expect(201)
+  ).body;
+  line = (await call(f, 'get', '/credit-lines/' + line._id)).body;
+  const input = {
+      walletId: w._id,
+      amountMinor: 1001,
+      revision: line.revision,
+      distribution: 'uniform',
+      description: 'Un abono general',
+    },
+    key = randomUUID();
+  const paid = (await call(f, 'post', `/credit-lines/${line._id}/payments`, input, key).expect(201))
+    .body;
+  assert.deepEqual(
+    paid.payments.map((p) => p.payment.amountMinor),
+    [100, 451, 450],
+  );
+  assert.equal(paid.movement.amountMinor, -1001);
+  assert.equal(paid.movement.allocations.length, 3);
+  assert.equal(paid.movement.operatingMinor, -1001);
+  assert.equal(paid.payments[0].debt.status, 'settled');
+  assert.equal(paid.payments[1].payment.feeMinor, 10);
+  const retry = (
+    await call(f, 'post', `/credit-lines/${line._id}/payments`, input, key).expect(201)
+  ).body;
+  assert.equal(retry.movement._id, paid.movement._id);
+  assert.equal(
+    await db
+      .collection('movements')
+      .countDocuments({ businessId: f.business._id, kind: 'debtPayment' }),
+    1,
+  );
+  assert.equal((await call(f, 'get', '/wallets/' + w._id)).body.balanceMinor, 3999);
+  assert.equal((await call(f, 'get', '/credit-statements/' + statement._id)).body.paidMinor, 1001);
+  const unchanged = JSON.stringify((await call(f, 'get', '/debts')).body);
+  await call(f, 'post', `/credit-lines/${line._id}/payments`, {
+    ...input,
+    revision: paid.line.revision,
+    walletId: empty._id,
+    amountMinor: 100,
+  }).expect(422);
+  assert.equal(JSON.stringify((await call(f, 'get', '/debts')).body), unchanged);
+  assert.equal(
+    await db.collection('debtPayments').countDocuments({ businessId: f.business._id }),
+    3,
+  );
+  await call(f, 'post', `/credit-lines/${line._id}/payments`, {
+    ...input,
+    revision: paid.line.revision,
+    amountMinor: 1100,
+  }).expect(422);
+  const v = await user();
+  await call(f, 'post', '/members', { email: v.email, role: 'viewer' }).expect(201);
+  await call({ ...f, token: v.token }, 'post', `/credit-lines/${line._id}/payments`, {
+    ...input,
+    revision: paid.line.revision,
+  }).expect(403);
+  const body = { ...input, revision: paid.line.revision, amountMinor: 100 };
+  const concurrent = await Promise.all([
+    call(f, 'post', `/credit-lines/${line._id}/payments`, body),
+    call(f, 'post', `/credit-lines/${line._id}/payments`, body),
+  ]);
+  assert.deepEqual(concurrent.map((r) => r.status).sort(), [201, 409]);
+  assert.equal((await call(f, 'get', '/wallets/' + w._id)).body.balanceMinor, 3899);
 });

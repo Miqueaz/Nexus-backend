@@ -113,6 +113,7 @@ export function businessSettings(business) {
     ...business,
     capabilities: {
       scheduledCommitments: 1,
+      uniformCreditPayments: 1,
       inventoryMaterials: 1,
       saleServices: 1,
       saleCommissions: 1,

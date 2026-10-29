@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { distributeUniform } from './line-payment.js';
 import { allocateStatementPayment } from './statements.js';
 import {
   z,
@@ -41,7 +43,7 @@ export function createDebtsService({ commands, finance, contacts, financialManag
     // Escritura deliberada en el agregado para serializar disposiciones concurrentes.
     await tx.update('creditLines', lineId, line.revision, { lastActivityAt: new Date() });
   }
-  async function payInTx(tx, debtId, d, checkCapacity = true) {
+  async function payInTx(tx, debtId, d, checkCapacity = true, postCash = true) {
     const debt = await tx.get('debts', debtId);
     ensure(debt.status === 'active', 409, 'DEBT_SETTLED', 'La deuda ya está liquidada');
     const allocation = allocatePayment(debt.schedule, d.amountMinor);
@@ -49,21 +51,25 @@ export function createDebtsService({ commands, finance, contacts, financialManag
     const paidFeeMinor = debt.paidFeeMinor + allocation.feeMinor;
     const payment = await tx.insert('debtPayments', {
       debtId,
+      ...(d.linePaymentId
+        ? { linePaymentId: d.linePaymentId, creditLineId: debt.creditLineId }
+        : {}),
       walletId: d.walletId,
       amountMinor: d.amountMinor,
       principalMinor: allocation.principalMinor,
       feeMinor: allocation.feeMinor,
       description: d.description,
     });
-    await finance.post(tx, {
-      walletId: d.walletId,
-      amountMinor: -d.amountMinor,
-      kind: 'debtPayment',
-      category: debt.kind,
-      operatingMinor: -(debt.kind === 'credit' ? allocation.feeMinor : d.amountMinor),
-      description: d.description,
-      reference: payment._id,
-    });
+    if (postCash)
+      await finance.post(tx, {
+        walletId: d.walletId,
+        amountMinor: -d.amountMinor,
+        kind: 'debtPayment',
+        category: debt.kind,
+        operatingMinor: -(debt.kind === 'credit' ? allocation.feeMinor : d.amountMinor),
+        description: d.description,
+        reference: payment._id,
+      });
     const updated = await tx.update('debts', debtId, d.revision, {
       schedule: allocation.schedule,
       paidPrincipalMinor,
@@ -187,7 +193,13 @@ export function createDebtsService({ commands, finance, contacts, financialManag
     payLine(ctx, lineId, input) {
       id.parse(lineId);
       const d = z
-        .strictObject({ walletId: id, amountMinor: amount, description: notes, revision })
+        .strictObject({
+          walletId: id,
+          amountMinor: amount,
+          description: notes,
+          revision,
+          distribution: z.enum(['oldest', 'uniform']).optional(),
+        })
         .parse(input);
       return commands.run(ctx, 'debt.line.payment.created', { lineId, ...d }, async (tx) => {
         const line = await tx.get('creditLines', lineId);
@@ -207,7 +219,7 @@ export function createDebtsService({ commands, finance, contacts, financialManag
             (r) => r.principalMinor + r.feeMinor > r.paidPrincipalMinor + r.paidFeeMinor,
           )?.dueOn ?? debt.firstDueOn;
         const debts = (await tx.find('debts', { creditLineId: lineId, status: 'active' }))
-          .filter((debt) => remaining(debt) > 0)
+          .filter((debt) => !debt.correctionStatus && remaining(debt) > 0)
           .sort(
             (a, b) =>
               firstDue(a).localeCompare(firstDue(b)) ||
@@ -222,18 +234,68 @@ export function createDebtsService({ commands, finance, contacts, financialManag
           'OVERPAYMENT',
           'El pago supera el saldo pendiente de la línea',
         );
+        const uniform = d.distribution === 'uniform',
+          linePaymentId = uniform ? randomUUID() : null;
         let left = d.amountMinor;
+        const portions = uniform
+          ? distributeUniform(debts.map(remaining), d.amountMinor)
+          : debts.map((debt) => {
+              const part = Math.min(left, remaining(debt));
+              left -= part;
+              return part;
+            });
         const payments = [];
-        for (const debt of debts) {
-          if (!left) break;
-          const amountMinor = Math.min(left, remaining(debt));
+        for (const [i, debt] of debts.entries()) {
+          if (!portions[i]) continue;
           payments.push(
-            await payInTx(tx, debt._id, { ...d, amountMinor, revision: debt.revision }, false),
+            await payInTx(
+              tx,
+              debt._id,
+              {
+                ...d,
+                amountMinor: portions[i],
+                revision: debt.revision,
+                ...(uniform ? { linePaymentId } : {}),
+              },
+              false,
+              !uniform,
+            ),
           );
-          left -= amountMinor;
         }
+        const movement = uniform
+          ? await finance.post(tx, {
+              walletId: d.walletId,
+              amountMinor: -d.amountMinor,
+              kind: 'debtPayment',
+              category: 'creditLinePayment',
+              operatingMinor: -payments.reduce(
+                (n, p) =>
+                  n + (p.debt.kind === 'credit' ? p.payment.feeMinor : p.payment.amountMinor),
+                0,
+              ),
+              description: d.description || 'Abono a ' + line.name,
+              reference: linePaymentId,
+              linePaymentId,
+              creditLineId: lineId,
+              distribution: 'uniform',
+              allocations: payments.map((p) => ({
+                debtId: p.debt._id,
+                paymentId: p.payment._id,
+                name: p.debt.name,
+                amountMinor: p.payment.amountMinor,
+                principalMinor: p.payment.principalMinor,
+                feeMinor: p.payment.feeMinor,
+              })),
+            })
+          : null;
         await capacity(tx, lineId, 0);
-        return { line: await tx.get('creditLines', lineId), payments, amountMinor: d.amountMinor };
+        return {
+          line: await tx.get('creditLines', lineId),
+          payments,
+          amountMinor: d.amountMinor,
+          distribution: d.distribution || 'oldest',
+          ...(movement ? { movement } : {}),
+        };
       });
     },
     reschedule(ctx, debtId, input) {
