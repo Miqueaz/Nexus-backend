@@ -2371,7 +2371,7 @@ test('Snapshot agrupa lecturas con aislamiento, historial y paginación sin trun
   const current = (await call(f, 'get', '/snapshot').expect(200)).body;
   assert.equal(current.business._id, f.business._id);
   assert.equal(current.business.role, 'owner');
-  assert.equal(Object.keys(current.collections).length, 17);
+  assert.equal(Object.keys(current.collections).length, 19);
   assert.equal(current.collections.wallets.data[0].balanceMinor, 10100);
   assert.deepEqual(
     current.collections.movements,
@@ -2722,4 +2722,145 @@ test('Personalización por usuario y negocio: viewer, conflictos, auditoría y f
     role: 'removed',
   }).expect(200);
   await call(v, 'put', '/preferences', { revision: 1, preferences }).expect(404);
+});
+
+test('Scheduled commitments never spend automatically; confirmation and cancellation are scoped, atomic and idempotent', async () => {
+  const f = await fixture(),
+    w = await wallet(f, 10000),
+    startOn = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10),
+    nextOn = new Date(Date.parse(startOn) + 86400000).toISOString().slice(0, 10);
+  const plan = (
+    await call(f, 'post', '/commitments', {
+      name: 'Gym',
+      amountMinor: 1000,
+      startOn,
+      frequency: 'daily',
+      paymentMethod: 'card',
+      preferredWalletId: w._id,
+    }).expect(201)
+  ).body;
+  assert.equal((await call(f, 'get', `/wallets/${w._id}`).expect(200)).body.balanceMinor, 10000);
+  assert.equal(
+    await db
+      .collection('movements')
+      .countDocuments({ businessId: f.business._id, kind: 'expense' }),
+    0,
+  );
+  const snapshot = (
+    await call(f, 'get', '/snapshot?collections=commitments,commitment-resolutions').expect(200)
+  ).body;
+  assert.equal(snapshot.collections.commitments.data[0].name, 'Gym');
+  assert.equal(snapshot.collections['commitment-resolutions'].data.length, 0);
+  await call(f, 'post', `/commitments/${plan._id}/resolve`, {
+    dueOn: startOn,
+    decision: 'paid',
+    revision: 1,
+  }).expect(422);
+  await call(f, 'post', `/commitments/${plan._id}/resolve`, {
+    dueOn: startOn,
+    decision: 'paid',
+    revision: 1,
+    walletId: w._id,
+    amountMinor: 10001,
+  }).expect(422);
+  assert.equal(
+    await db.collection('commitmentResolutions').countDocuments({ commitmentId: plan._id }),
+    0,
+  );
+  const key = randomUUID(),
+    input = {
+      dueOn: startOn,
+      decision: 'paid',
+      walletId: w._id,
+      amountMinor: 1100,
+      revision: 1,
+      reason: 'Pago real',
+    };
+  const paid = (await call(f, 'post', `/commitments/${plan._id}/resolve`, input, key).expect(201))
+    .body;
+  const replay = (await call(f, 'post', `/commitments/${plan._id}/resolve`, input, key).expect(201))
+    .body;
+  assert.equal(paid.movement._id, replay.movement._id);
+  assert.equal(paid.movement.commitmentId, plan._id);
+  assert.equal((await call(f, 'get', `/wallets/${w._id}`).expect(200)).body.balanceMinor, 8900);
+  await call(f, 'post', `/commitments/${plan._id}/resolve`, input).expect(409);
+  await call(f, 'post', `/commitments/${plan._id}/resolve`, {
+    dueOn: nextOn,
+    decision: 'cancelled',
+    revision: 2,
+  }).expect(422);
+  await call(f, 'post', `/commitments/${plan._id}/resolve`, {
+    dueOn: nextOn,
+    decision: 'cancelled',
+    revision: 2,
+    reason: 'No asistí',
+  }).expect(201);
+  assert.equal((await call(f, 'get', `/wallets/${w._id}`).expect(200)).body.balanceMinor, 8900);
+  assert.equal(
+    await db.collection('commitmentResolutions').countDocuments({ commitmentId: plan._id }),
+    2,
+  );
+  const future = '2099-01-01',
+    futurePlan = (
+      await call(f, 'post', '/commitments', {
+        name: 'Casa',
+        amountMinor: 3000,
+        startOn: future,
+      }).expect(201)
+    ).body;
+  await call(f, 'post', `/commitments/${futurePlan._id}/resolve`, {
+    dueOn: future,
+    decision: 'paid',
+    walletId: w._id,
+    revision: 1,
+  }).expect(422);
+  const other = await fixture(),
+    foreign = await wallet(other, 1000);
+  await call(other, 'get', `/commitments/${plan._id}`).expect(404);
+  await call(f, 'post', '/commitments', {
+    name: 'Ajeno',
+    amountMinor: 100,
+    startOn,
+    preferredWalletId: foreign._id,
+  }).expect(404);
+  const viewer = await user();
+  await call(f, 'post', '/members', { email: viewer.email, role: 'viewer' }).expect(201);
+  await call({ ...f, token: viewer.token }, 'post', '/commitments', {
+    name: 'No',
+    amountMinor: 100,
+    startOn,
+  }).expect(403);
+  const stop = (await call(f, 'post', `/commitments/${plan._id}/stop`, { revision: 3 }).expect(200))
+    .body;
+  assert.equal(stop.archived, true);
+  assert.equal(
+    await db
+      .collection('audit')
+      .countDocuments({
+        businessId: f.business._id,
+        action: 'commitment.resolved',
+        collection: 'commitmentResolutions',
+      }),
+    2,
+  );
+});
+
+test('Concurrent confirmations of one scheduled payment create one expense and one resolution', async () => {
+  const f = await fixture(),
+    w = await wallet(f, 10000),
+    startOn = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const p = (
+    await call(f, 'post', '/commitments', { name: 'Renta', amountMinor: 2000, startOn }).expect(201)
+  ).body;
+  const body = { dueOn: startOn, decision: 'paid', walletId: w._id, revision: 1 };
+  const results = await Promise.all([
+    call(f, 'post', `/commitments/${p._id}/resolve`, body),
+    call(f, 'post', `/commitments/${p._id}/resolve`, body),
+  ]);
+  assert.deepEqual(results.map((r) => r.status).sort(), [201, 409]);
+  assert.equal((await call(f, 'get', `/wallets/${w._id}`)).body.balanceMinor, 8000);
+  assert.equal(
+    await db.collection('commitmentResolutions').countDocuments({ commitmentId: p._id }),
+    1,
+  );
 });

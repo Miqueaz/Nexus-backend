@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { createPreparationCache } from '../src/adapters/mongo/preparation-cache.js';
 import { assertDatabasePrepared } from '../src/adapters/mongo/database.js';
 
-test('Warm requests skip all 12 index metadata reads while cold requests verify every constraint', async () => {
+test('Warm requests skip all 13 index metadata reads while cold requests verify every constraint', async () => {
   const definitions = {
+    commitmentResolutions: [{ key: { businessId: 1, commitmentId: 1, dueOn: 1 }, unique: true }],
     services: [{ key: { businessId: 1, createdAt: -1, _id: -1 } }],
     platformSettings: [{ key: { updatedAt: -1 } }],
     authRateLimits: [{ key: { expiresAt: 1 }, expireAfterSeconds: 0 }],
@@ -51,12 +52,12 @@ test('Warm requests skip all 12 index metadata reads while cold requests verify 
   const cache = createPreparationCache({ now: () => time });
   const prepare = () => assertDatabasePrepared(db);
   assert.equal(await cache.check('database-a', prepare), false);
-  assert.equal(reads, 12);
+  assert.equal(reads, 13);
   for (let i = 0; i < 10; i++) assert.equal(await cache.check('database-a', prepare), true);
-  assert.equal(reads, 12, 'ten warm requests add zero listIndexes commands');
+  assert.equal(reads, 13, 'ten warm requests add zero listIndexes commands');
   time = 300000;
   assert.equal(await cache.check('database-a', prepare), false);
-  assert.equal(reads, 24);
+  assert.equal(reads, 26);
   definitions.items = [];
   await assert.rejects(cache.check('database-a', prepare, { force: true }), {
     code: 'DATABASE_NOT_PREPARED',

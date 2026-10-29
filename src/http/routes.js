@@ -261,6 +261,19 @@ export function createRoutes(s) {
     (r) => s.debts.reschedule(r.context, r.params.id, r.body),
     financial,
   );
+  write('post', '/commitments', (r) => s.commitments.create(r.context, r.body), financial);
+  write(
+    'post',
+    '/commitments/:id/stop',
+    (r) => s.commitments.stop(r.context, r.params.id, r.body),
+    { idempotent: true },
+  );
+  write(
+    'post',
+    '/commitments/:id/resolve',
+    (r) => s.commitments.resolve(r.context, r.params.id, r.body),
+    financial,
+  );
   read('/calendar', (r) => s.planning.calendar(r.context, r.query));
   read('/history', (r) => s.queries.history(r.context, r.query));
   read('/audit', (r) => s.queries.audit(r.context, r.query));
@@ -273,6 +286,7 @@ export function createRoutes(s) {
     'credit-lines': 'creditLines',
     'credit-statements': 'creditStatements',
     'debt-payments': 'debtPayments',
+    'commitment-resolutions': 'commitmentResolutions',
   };
   read('/:collection', (r) =>
     s.queries.list(r.context, aliases[r.params.collection] ?? r.params.collection, r.query),

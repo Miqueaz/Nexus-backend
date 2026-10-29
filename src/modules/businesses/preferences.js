@@ -28,9 +28,13 @@ export const widgetSchema = z
       'debt',
       'availableCredit',
       'interestFreePayments',
+      'commitments',
       'lowStock',
       'projects',
     ]),
+    commitmentStatus: z
+      .enum(['all', 'unresolved', 'upcoming', 'pending', 'overdue', 'paid', 'cancelled'])
+      .optional(),
     accounts: unique(account, 200),
     periodMode: z.enum(['global', 'all', 'custom']),
     from: date.optional(),

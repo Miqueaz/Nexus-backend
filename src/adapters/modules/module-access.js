@@ -5,6 +5,7 @@ import { assertModuleEnabled } from '../../modules/businesses/settings.js';
 const actions = {
   docs: 'docs',
   wallet: 'finance',
+  commitment: 'finance',
   finance: 'finance',
   creditLine: 'finance',
   debt: 'finance',

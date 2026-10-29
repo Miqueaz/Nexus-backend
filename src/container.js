@@ -1,3 +1,4 @@
+import { createCommitmentsService } from './modules/commitments/service.js';
 import { createContactNotifications } from './modules/contacts/notifications.js';
 import { createCommissionWallets } from './adapters/modules/commission-wallets.js';
 import { createContactUsers } from './adapters/mongo/contact-users.js';
@@ -127,6 +128,7 @@ export async function createContainer({ client, db, config, logger, googleIdenti
       contacts,
       sales: createSalesAdapter(sales),
     }),
+    commitments: createCommitmentsService({ commands, finance }),
     planning: createPlanningService({ commands }),
     docs: createDocsService({ commands, store: createDocsStore(db) }),
     projections: createProjectionsService({ commands }),

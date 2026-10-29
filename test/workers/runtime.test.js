@@ -1135,3 +1135,60 @@ test('Workerd protects administration and applies registration and module settin
     200,
   );
 });
+
+test('Workerd stores scheduled payments without spending and confirms them once with a chosen wallet', async () => {
+  const f = await fixture(),
+    startOn = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const wallet = await call(
+    'POST',
+    f.base + '/wallets',
+    { name: 'Compromisos', openingBalanceMinor: 1000 },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(wallet.status, 201);
+  const plan = await call(
+    'POST',
+    f.base + '/commitments',
+    {
+      name: 'Gym',
+      amountMinor: 100,
+      startOn,
+      frequency: 'monthly',
+      preferredWalletId: wallet.data._id,
+    },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(plan.status, 201, JSON.stringify(plan.data));
+  let w = await call('GET', f.base + '/wallets/' + wallet.data._id, undefined, f.token);
+  assert.equal(w.data.balanceMinor, 1000);
+  const key = randomUUID(),
+    body = { dueOn: startOn, decision: 'paid', walletId: wallet.data._id, revision: 1 };
+  const paid = await call(
+    'POST',
+    f.base + '/commitments/' + plan.data._id + '/resolve',
+    body,
+    f.token,
+    key,
+  );
+  assert.equal(paid.status, 201, JSON.stringify(paid.data));
+  const replay = await call(
+    'POST',
+    f.base + '/commitments/' + plan.data._id + '/resolve',
+    body,
+    f.token,
+    key,
+  );
+  assert.equal(replay.data.movement._id, paid.data.movement._id);
+  w = await call('GET', f.base + '/wallets/' + wallet.data._id, undefined, f.token);
+  assert.equal(w.data.balanceMinor, 900);
+  const snapshot = await call(
+    'GET',
+    f.base + '/snapshot?collections=commitments,commitment-resolutions',
+    undefined,
+    f.token,
+  );
+  assert.equal(snapshot.status, 200);
+  assert.equal(snapshot.data.collections['commitment-resolutions'].data.length, 1);
+});
