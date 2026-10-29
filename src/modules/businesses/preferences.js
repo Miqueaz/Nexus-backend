@@ -27,6 +27,7 @@ export const widgetSchema = z
       'balances',
       'debt',
       'availableCredit',
+      'interestFreePayments',
       'lowStock',
       'projects',
     ]),

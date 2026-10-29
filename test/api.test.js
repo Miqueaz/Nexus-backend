@@ -2643,12 +2643,12 @@ test('Personalización por usuario y negocio: viewer, conflictos, auditoría y f
   const v = { ...f, token: viewer.token };
   const widget = {
     id: randomUUID(),
-    title: 'Compras de la tarjeta',
+    title: 'Pagos para no generar intereses',
     columns: 12,
     height: 400,
     color: '#8262a5',
     type: 'chart',
-    preset: 'creditPurchases',
+    preset: 'interestFreePayments',
     accounts: [],
     periodMode: 'custom',
     from: '2026-10-01',
