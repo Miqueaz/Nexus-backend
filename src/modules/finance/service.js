@@ -43,7 +43,7 @@ export function createFinanceService({ commands, finance, financialManagement })
         .parse(input);
       return commands.run(ctx, 'wallet.updated', { walletId, ...d }, async (tx) => {
         const wallet = await tx.get('wallets', walletId);
-        await financialManagement.assertWalletEmpty(tx, wallet);
+        if (d.archived === true) await financialManagement.assertWalletEmpty(tx, wallet);
         return tx.update('wallets', walletId, d.revision, d);
       });
     },

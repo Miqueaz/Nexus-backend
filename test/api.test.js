@@ -1844,16 +1844,26 @@ test('Login valida credenciales y persiste seguridad sin secretos', async () => 
   assert.ok(!serialized.includes('accessToken'));
 });
 
-test('Cuentas solo se editan o eliminan con saldo cero, conservando movimientos e historial', async () => {
+test('Cuentas permiten editar con saldo pero protegen eliminación, movimientos e historial', async () => {
   const f = await fixture();
   const w = await wallet(f, 100);
-  for (const patch of [{ name: 'Otro nombre' }, { kind: 'cash' }, { archived: true }]) {
-    const result = await call(f, 'patch', `/wallets/${w._id}`, {
-      ...patch,
+  const renamed = (
+    await call(f, 'patch', `/wallets/${w._id}`, {
+      name: 'Otro nombre',
+      kind: 'cash',
       revision: w.revision,
-    }).expect(409);
-    assert.equal(result.body.error.code, 'WALLET_HAS_BALANCE');
-  }
+    }).expect(200)
+  ).body;
+  assert.equal(renamed.balanceMinor, 100);
+  await call(f, 'patch', `/wallets/${w._id}`, {
+    balanceMinor: 0,
+    revision: renamed.revision,
+  }).expect(422);
+  const blocked = await call(f, 'patch', `/wallets/${w._id}`, {
+    archived: true,
+    revision: renamed.revision,
+  }).expect(409);
+  assert.equal(blocked.body.error.code, 'WALLET_HAS_BALANCE');
   await call(f, 'post', '/movements', {
     walletId: w._id,
     kind: 'expense',
@@ -1887,7 +1897,7 @@ test('Cuentas solo se editan o eliminan con saldo cero, conservando movimientos 
     await db
       .collection('audit')
       .countDocuments({ businessId: f.business._id, action: 'wallet.updated' }),
-    2,
+    3,
   );
   const income = await call(f, 'post', '/movements', {
     walletId: w._id,
@@ -1928,7 +1938,7 @@ test('Cuenta vacía con crédito recibido pendiente permanece bloqueada hasta li
     toWalletId: payer._id,
     amountMinor: 100,
   }).expect(201);
-  for (const patch of [{ name: 'Cambio' }, { archived: true }]) {
+  for (const patch of [{ archived: true }]) {
     const r = await call(f, 'patch', `/wallets/${w._id}`, { ...patch, revision: 3 }).expect(409);
     assert.equal(r.body.error.code, 'WALLET_HAS_DEBT');
   }
@@ -1940,7 +1950,7 @@ test('Cuenta vacía con crédito recibido pendiente permanece bloqueada hasta li
   await call(f, 'patch', `/wallets/${w._id}`, { archived: true, revision: 3 }).expect(200);
 });
 
-test('Línea bloquea edición y eliminación con deuda; al liquidar permite cambiar cupo y eliminar', async () => {
+test('Línea permite editar datos con deuda, limita reducciones y bloquea eliminar hasta liquidar', async () => {
   const f = await fixture(),
     payer = await wallet(f, 1000);
   let line = (
@@ -1957,17 +1967,32 @@ test('Línea bloquea edición y eliminación con deuda; al liquidar permite camb
       firstDueOn: '2027-01-01',
     }).expect(201)
   ).body;
-  for (const patch of [
-    { name: 'Cambio' },
-    { minimumPaymentMinor: 0 },
-    { limitMinor: 2000 },
-    { archived: true },
-  ]) {
-    const r = await call(f, 'patch', `/credit-lines/${line._id}`, { ...patch, revision: 2 }).expect(
-      409,
-    );
-    assert.equal(r.body.error.code, 'CREDIT_LINE_HAS_DEBT');
-  }
+  const beforeDebt = await db.collection('debts').findOne({ _id: debt._id });
+  const changed = (
+    await call(f, 'patch', `/credit-lines/${line._id}`, {
+      name: 'Cambio',
+      limitMinor: 2000,
+      statementCutoffOn: '2026-10-06',
+      paymentDueOn: '2026-11-06',
+      revision: 2,
+    }).expect(200)
+  ).body;
+  assert.equal(changed.name, 'Cambio');
+  assert.equal(changed.paymentDueOn, '2026-11-06');
+  assert.deepEqual(await db.collection('debts').findOne({ _id: debt._id }), beforeDebt);
+  await call(f, 'patch', `/credit-lines/${line._id}`, {
+    limitMinor: 109,
+    revision: changed.revision,
+  }).expect(422);
+  await call(f, 'patch', `/credit-lines/${line._id}`, {
+    usedMinor: 0,
+    revision: changed.revision,
+  }).expect(422);
+  const deletion = await call(f, 'patch', `/credit-lines/${line._id}`, {
+    archived: true,
+    revision: changed.revision,
+  }).expect(409);
+  assert.equal(deletion.body.error.code, 'CREDIT_LINE_HAS_DEBT');
   debt = (
     await call(f, 'post', `/debts/${debt._id}/payments`, {
       walletId: payer._id,
@@ -2508,7 +2533,7 @@ test('Estados de cuenta permiten dos mínimos con deuda, cierre inmutable, pagos
   ).body;
   const current = (await call(f, 'get', `/credit-lines/${l._id}`).expect(200)).body;
   await call(f, 'patch', `/credit-lines/${l._id}`, {
-    name: 'No permitido',
+    archived: true,
     revision: current.revision,
   }).expect(409);
   const changed = (

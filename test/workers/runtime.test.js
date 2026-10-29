@@ -507,17 +507,33 @@ test('Workerd protege edición y eliminación con saldo/deuda y conserva el borr
     randomUUID(),
   );
   assert.equal(debt.status, 201, JSON.stringify(debt.data));
-  for (const patch of [{ archived: true }, { name: 'Cambio' }, { limitMinor: 2000 }]) {
-    r = await call(
-      'PATCH',
-      f.base + '/credit-lines/' + line.data._id,
-      { ...patch, revision: 2 },
-      f.token,
-      randomUUID(),
-    );
-    assert.equal(r.status, 409, JSON.stringify(r.data));
-    assert.equal(r.data.error.code, 'CREDIT_LINE_HAS_DEBT');
-  }
+  r = await call(
+    'PATCH',
+    f.base + '/credit-lines/' + line.data._id,
+    { name: 'Cambio', limitMinor: 2000, paymentDueOn: '2027-01-10', revision: 2 },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.name, 'Cambio');
+  const editedRevision = r.data.revision;
+  r = await call(
+    'PATCH',
+    f.base + '/credit-lines/' + line.data._id,
+    { limitMinor: 100, revision: editedRevision },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(r.status, 422, JSON.stringify(r.data));
+  r = await call(
+    'PATCH',
+    f.base + '/credit-lines/' + line.data._id,
+    { archived: true, revision: editedRevision },
+    f.token,
+    randomUUID(),
+  );
+  assert.equal(r.status, 409, JSON.stringify(r.data));
+  assert.equal(r.data.error.code, 'CREDIT_LINE_HAS_DEBT');
   const empty = await call(
     'POST',
     f.base + '/credit-lines',

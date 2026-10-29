@@ -93,7 +93,22 @@ export function createDebtsService({ commands, finance, contacts, financialManag
       const d = parsePatch(creditLineUpdateSchema, input);
       return commands.run(ctx, 'creditLine.updated', { lineId, ...d }, async (tx) => {
         const line = await tx.get('creditLines', lineId);
-        await financialManagement.assertLineEmpty(tx, line);
+        if (d.archived === true) await financialManagement.assertLineEmpty(tx, line);
+        if (d.limitMinor !== undefined && d.limitMinor !== line.limitMinor) {
+          const debts = await tx.find('debts', { creditLineId: lineId, status: 'active' });
+          const usedMinor = debts
+            .filter((debt) => !debt.correctionStatus)
+            .reduce(
+              (total, debt) => total + pending(debt).principalMinor + pending(debt).feeMinor,
+              0,
+            );
+          ensure(
+            d.limitMinor >= usedMinor,
+            422,
+            'CREDIT_LIMIT_BELOW_DEBT',
+            'El límite no puede ser menor que la deuda pendiente',
+          );
+        }
         assertStatementDates({ ...line, ...d });
         return tx.update('creditLines', lineId, d.revision, d);
       });

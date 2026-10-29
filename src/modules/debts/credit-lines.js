@@ -17,7 +17,7 @@ export const creditLineCreateSchema = z.strictObject({
   ...statementFields,
 });
 
-// El servicio permite editar cupo y datos solo cuando no existen obligaciones pendientes.
+// Los datos pueden editarse con deuda; solo archivar exige liquidar las obligaciones.
 export const creditLineUpdateSchema = z
   .strictObject({
     name: text,
